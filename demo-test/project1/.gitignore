@@ -1,0 +1,8 @@
+# Standard web project gitignore
+node_modules/
+*.log
+*.tmp
+build/
+dist/
+.env
+cache/

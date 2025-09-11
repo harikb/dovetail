@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/harikb/dovetail/internal/action"
 	"github.com/harikb/dovetail/internal/compare"
+	"github.com/harikb/dovetail/internal/config"
 	"github.com/harikb/dovetail/internal/diff"
 )
 
@@ -37,6 +37,7 @@ var (
 	excludeNames      []string
 	excludePaths      []string
 	excludeExtensions []string
+	useGitignore      bool
 )
 
 func init() {
@@ -53,6 +54,7 @@ func init() {
 	diffCmd.Flags().StringSliceVar(&excludeNames, "exclude-name", []string{}, "exclude files/directories by name or glob pattern")
 	diffCmd.Flags().StringSliceVar(&excludePaths, "exclude-path", []string{}, "exclude files/directories by relative path")
 	diffCmd.Flags().StringSliceVar(&excludeExtensions, "exclude-ext", []string{}, "exclude files by extension (without dot)")
+	diffCmd.Flags().BoolVar(&useGitignore, "use-gitignore", false, "read and apply .gitignore rules from both directories")
 
 	// Mark output as required when not showing diff
 	diffCmd.MarkFlagRequired("output")
@@ -85,32 +87,68 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("output file (-o) is required when not using --show-diff")
 	}
 
-	if GetVerboseLevel() >= 1 {
+	// Load configuration
+	loader := config.NewLoader(GetVerboseLevel())
+	cfg, err := loader.Load("")
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	// Apply CLI overrides
+	cliConfig := config.CLIConfig{
+		VerboseLevel:      GetVerboseLevel(),
+		NoColor:           false, // We'll get this from viper later
+		ExcludeNames:      excludeNames,
+		ExcludePaths:      excludePaths,
+		ExcludeExtensions: excludeExtensions,
+		UseGitignore:      useGitignore,
+	}
+	config.ApplyCLIOverrides(cfg, cliConfig)
+
+	// Process gitignore if enabled
+	if cfg.Gitignore.Enabled {
+		gitignoreParser := config.NewGitignoreParser(cfg.General.Verbose)
+		gitignoreResult, err := gitignoreParser.ParseGitignoreFiles(leftDir, rightDir, cfg.Gitignore.CheckBothSides)
+		if err != nil {
+			return fmt.Errorf("failed to process .gitignore: %w", err)
+		}
+
+		// Add gitignore patterns to exclusions
+		cfg.Exclusions.Names = append(cfg.Exclusions.Names, gitignoreResult.Names...)
+		cfg.Exclusions.Paths = append(cfg.Exclusions.Paths, gitignoreResult.Paths...)
+		cfg.Exclusions.Extensions = append(cfg.Exclusions.Extensions, gitignoreResult.Extensions...)
+	}
+
+	if cfg.General.Verbose >= 1 {
 		fmt.Printf("Comparing directories:\n")
 		fmt.Printf("  Left:  %s\n", leftDir)
 		fmt.Printf("  Right: %s\n", rightDir)
-		if len(excludeNames) > 0 {
-			fmt.Printf("  Excluding names: %s\n", strings.Join(excludeNames, ", "))
+		if len(cfg.Exclusions.Names) > 0 {
+			fmt.Printf("  Excluding names: %s\n", strings.Join(cfg.Exclusions.Names, ", "))
 		}
-		if len(excludePaths) > 0 {
-			fmt.Printf("  Excluding paths: %s\n", strings.Join(excludePaths, ", "))
+		if len(cfg.Exclusions.Paths) > 0 {
+			fmt.Printf("  Excluding paths: %s\n", strings.Join(cfg.Exclusions.Paths, ", "))
 		}
-		if len(excludeExtensions) > 0 {
-			fmt.Printf("  Excluding extensions: %s\n", strings.Join(excludeExtensions, ", "))
+		if len(cfg.Exclusions.Extensions) > 0 {
+			fmt.Printf("  Excluding extensions: %s\n", strings.Join(cfg.Exclusions.Extensions, ", "))
 		}
 		fmt.Println()
 	}
 
-	// Create comparison options
+	// Create comparison options from config
 	options := compare.ComparisonOptions{
-		ExcludeNames:      excludeNames,
-		ExcludePaths:      excludePaths,
-		ExcludeExtensions: excludeExtensions,
+		ExcludeNames:      cfg.Exclusions.Names,
+		ExcludePaths:      cfg.Exclusions.Paths,
+		ExcludeExtensions: cfg.Exclusions.Extensions,
+		FollowSymlinks:    cfg.General.FollowSymlinks,
+		IgnorePermissions: cfg.General.IgnorePermissions,
+		MaxFileSize:       cfg.Performance.MaxFileSize,
+		ParallelWorkers:   cfg.Performance.ParallelWorkers,
 	}
 
 	// Create comparison engine
 	engine := compare.NewEngine(options)
-	engine.SetVerboseLevel(GetVerboseLevel())
+	engine.SetVerboseLevel(cfg.General.Verbose)
 
 	// Perform comparison
 	results, summary, err := engine.Compare(leftDir, rightDir)
@@ -118,7 +156,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("comparison failed: %w", err)
 	}
 
-	if GetVerboseLevel() >= 1 {
+	if cfg.General.Verbose >= 1 {
 		fmt.Printf("Comparison completed:\n")
 		fmt.Printf("  Files - Total: %d, Identical: %d, Modified: %d, Left only: %d, Right only: %d\n",
 			summary.TotalFiles, summary.IdenticalFiles, summary.ModifiedFiles,
@@ -135,7 +173,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		// Display diffs
 		diffOptions := diff.DisplayOptions{
 			IgnoreWhitespace: ignoreWhitespace,
-			NoColor:          viper.GetBool("no-color"),
+			NoColor:          cfg.General.NoColor,
 		}
 
 		diffDisplay := diff.NewDisplay(diffOptions)

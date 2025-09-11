@@ -1,0 +1,26 @@
+# Example Dovetail Configuration
+[general]
+verbose = 1
+no_color = false
+
+[performance]
+parallel_workers = 8
+max_file_size = 2097152  # 2MB
+
+[exclusions]
+names = [
+    ".DS_Store",
+    "Thumbs.db"
+]
+paths = [
+    "tmp/",
+    "temp/"
+]
+extensions = [
+    "tmp",
+    "swp"
+]
+
+[gitignore]
+enabled = false
+check_both_sides = true

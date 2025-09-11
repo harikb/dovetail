@@ -1,0 +1,11 @@
+# Test .gitignore file with SUPPORTED patterns only
+*.log
+*.tmp
+node_modules/
+build/
+/dist
+cache/
+
+# Files and paths
+temp.txt
+logs/
