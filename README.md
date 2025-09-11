@@ -96,16 +96,26 @@ dovetail diff /src /backup --show-diff --ignore-whitespace
 ### With Verbose Output
 
 ```bash
-# Enable detailed output
-dovetail diff /src /backup -o actions.txt --verbose
-dovetail dry-run actions.txt -l /src -r /backup --verbose
+# Basic verbose - shows high-level progress
+dovetail diff /src /backup -o actions.txt -v
+
+# Detailed verbose - shows directory scanning and file counts
+dovetail diff /large/project /backup -o actions.txt -vv
+
+# Debug verbose - shows every file being processed (useful for debugging stuck operations)
+dovetail diff /huge/codebase /backup -o actions.txt -vvv
 ```
+
+**Tip**: Use verbose modes to monitor progress on large directory comparisons. If the tool appears stuck, higher verbosity levels will show exactly which files or directories are being processed, helping you identify problematic areas to exclude.
 
 ## Command Reference
 
 ### Global Flags
 
-- `--verbose, -v`: Enable verbose output
+- `--verbose, -v`: Progressive verbosity levels:
+  - `-v`: Basic verbose (high-level progress and summaries)
+  - `-vv`: Detailed verbose (directory scanning, periodic progress)
+  - `-vvv`: Debug verbose (every file processed, real-time updates)
 - `--no-color`: Disable colored output
 - `--config`: Specify config file (default: `$HOME/.dovetail.yaml`)
 

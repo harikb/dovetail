@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/harikb/dovetail/internal/action"
 	"github.com/harikb/dovetail/internal/util"
@@ -98,7 +97,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if viper.GetBool("verbose") {
+	if GetVerboseLevel() >= 1 {
 		fmt.Printf("Executing actions:\n")
 		fmt.Printf("  Action file: %s\n", actionFile)
 		fmt.Printf("  Left dir:    %s\n", leftDir)
@@ -153,7 +152,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	successCount := 0
 	for _, result := range results {
 		if result.Success {
-			if viper.GetBool("verbose") {
+			if GetVerboseLevel() >= 1 {
 				fmt.Printf("✓ %s\n", result.Message)
 			}
 			successCount++

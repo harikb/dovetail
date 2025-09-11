@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/harikb/dovetail/internal/action"
 	"github.com/harikb/dovetail/internal/util"
@@ -78,7 +77,7 @@ func runDryRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve action file path: %w", err)
 	}
 
-	if viper.GetBool("verbose") {
+	if GetVerboseLevel() >= 1 {
 		fmt.Printf("Dry run preview:\n")
 		fmt.Printf("  Action file: %s\n", actionFile)
 		fmt.Printf("  Left dir:    %s\n", leftDir)

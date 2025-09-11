@@ -65,8 +65,9 @@ type ComparisonOptions struct {
 
 // Engine represents the directory comparison engine
 type Engine struct {
-	options ComparisonOptions
-	filter  *Filter
+	options      ComparisonOptions
+	filter       *Filter
+	verboseLevel int
 }
 
 // ComparisonSummary contains statistics about the comparison

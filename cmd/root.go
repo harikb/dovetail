@@ -8,7 +8,10 @@ import (
 	"github.com/spf13/viper"
 )
 
-var cfgFile string
+var (
+	cfgFile      string
+	verboseLevel int
+)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
@@ -36,11 +39,11 @@ func init() {
 
 	// Here you will define your flags and configuration settings.
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dovetail.yaml)")
-	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().CountVarP(&verboseLevel, "verbose", "v", "verbose output (-v basic, -vv detailed, -vvv debug)")
 	rootCmd.PersistentFlags().Bool("no-color", false, "disable colored output")
 
 	// Bind flags to viper
-	viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
+	viper.BindPFlag("verbose-level", rootCmd.PersistentFlags().Lookup("verbose"))
 	viper.BindPFlag("no-color", rootCmd.PersistentFlags().Lookup("no-color"))
 }
 
@@ -64,8 +67,22 @@ func initConfig() {
 
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
-		if viper.GetBool("verbose") {
+		if GetVerboseLevel() > 0 {
 			fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
 		}
 	}
+}
+
+// GetVerboseLevel returns the current verbosity level
+// 0 = no verbose output (default)
+// 1 = basic verbose (-v) - shows high-level progress
+// 2 = detailed verbose (-vv) - shows file-level progress
+// 3+ = debug verbose (-vvv) - shows everything
+func GetVerboseLevel() int {
+	// Try to get from the flag first
+	if verboseLevel > 0 {
+		return verboseLevel
+	}
+	// Fall back to viper (for config file support)
+	return viper.GetInt("verbose-level")
 }

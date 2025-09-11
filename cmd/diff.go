@@ -85,7 +85,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("output file (-o) is required when not using --show-diff")
 	}
 
-	if viper.GetBool("verbose") {
+	if GetVerboseLevel() >= 1 {
 		fmt.Printf("Comparing directories:\n")
 		fmt.Printf("  Left:  %s\n", leftDir)
 		fmt.Printf("  Right: %s\n", rightDir)
@@ -110,6 +110,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	// Create comparison engine
 	engine := compare.NewEngine(options)
+	engine.SetVerboseLevel(GetVerboseLevel())
 
 	// Perform comparison
 	results, summary, err := engine.Compare(leftDir, rightDir)
@@ -117,7 +118,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("comparison failed: %w", err)
 	}
 
-	if viper.GetBool("verbose") {
+	if GetVerboseLevel() >= 1 {
 		fmt.Printf("Comparison completed:\n")
 		fmt.Printf("  Files - Total: %d, Identical: %d, Modified: %d, Left only: %d, Right only: %d\n",
 			summary.TotalFiles, summary.IdenticalFiles, summary.ModifiedFiles,

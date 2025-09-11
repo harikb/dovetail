@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+
+	"github.com/harikb/dovetail/internal/util"
 )
 
 // NewEngine creates a new comparison engine with the given options
@@ -18,23 +20,35 @@ func NewEngine(options ComparisonOptions) *Engine {
 	}
 
 	return &Engine{
-		options: options,
-		filter:  NewFilter(options),
+		options:      options,
+		filter:       NewFilter(options),
+		verboseLevel: 0, // Default to no verbosity
 	}
+}
+
+// SetVerboseLevel sets the verbosity level for progress reporting
+func (e *Engine) SetVerboseLevel(level int) {
+	e.verboseLevel = level
 }
 
 // Compare performs a recursive comparison of two directories
 func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *ComparisonSummary, error) {
+	util.VerbosePrintf(e.verboseLevel, 1, "Starting directory comparison...")
+
 	// Collect all files from both directories
-	leftFiles, err := e.collectFiles(leftDir)
+	util.VerbosePrintf(e.verboseLevel, 1, "Scanning left directory: %s", leftDir)
+	leftFiles, err := e.collectFiles(leftDir, "left")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to scan left directory: %w", err)
 	}
+	util.VerbosePrintf(e.verboseLevel, 1, "Found %d items in left directory", len(leftFiles))
 
-	rightFiles, err := e.collectFiles(rightDir)
+	util.VerbosePrintf(e.verboseLevel, 1, "Scanning right directory: %s", rightDir)
+	rightFiles, err := e.collectFiles(rightDir, "right")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to scan right directory: %w", err)
 	}
+	util.VerbosePrintf(e.verboseLevel, 1, "Found %d items in right directory", len(rightFiles))
 
 	// Create a set of all unique paths
 	allPaths := make(map[string]bool)
@@ -45,11 +59,16 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 		allPaths[path] = true
 	}
 
+	util.VerbosePrintf(e.verboseLevel, 1, "Comparing %d unique paths using %d workers...", len(allPaths), e.options.ParallelWorkers)
+
 	// Compare files in parallel
 	results := make([]ComparisonResult, 0, len(allPaths))
 	summary := &ComparisonSummary{}
 	resultsChan := make(chan ComparisonResult, len(allPaths))
 	errorsChan := make(chan error, len(allPaths))
+
+	// Create progress reporter
+	progressReporter := util.NewProgressReporter(e.verboseLevel, len(allPaths))
 
 	// Create worker pool
 	var wg sync.WaitGroup
@@ -64,6 +83,9 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 
 			leftInfo := leftFiles[p]
 			rightInfo := rightFiles[p]
+
+			// Report progress
+			progressReporter.Report("Comparing: %s", p)
 
 			result, err := e.compareFile(p, leftInfo, rightInfo, leftDir, rightDir)
 			if err != nil {
@@ -92,16 +114,21 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 		summary.ErrorsEncountered = append(summary.ErrorsEncountered, err.Error())
 	}
 
+	progressReporter.Finish()
+	util.VerbosePrintf(e.verboseLevel, 1, "Comparison complete!")
+
 	return results, summary, nil
 }
 
 // collectFiles recursively collects all files from a directory
-func (e *Engine) collectFiles(dir string) (map[string]*FileInfo, error) {
+func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, error) {
 	files := make(map[string]*FileInfo)
+	fileCount := 0
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Skip files we can't access rather than failing completely
+			util.VerbosePrintf(e.verboseLevel, 2, "Skipping inaccessible path (%s): %s", side, path)
 			return nil
 		}
 
@@ -116,12 +143,28 @@ func (e *Engine) collectFiles(dir string) (map[string]*FileInfo, error) {
 			return nil
 		}
 
+		// Report current directory being scanned
+		if info.IsDir() {
+			util.VerbosePrintf(e.verboseLevel, 2, "Scanning directory (%s): %s", side, relPath)
+		}
+
 		// Apply filters
 		if e.filter.ShouldExclude(relPath, info) {
+			util.VerbosePrintf(e.verboseLevel, 3, "Excluding (%s): %s", side, relPath)
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+
+		// Report file being processed
+		if !info.IsDir() {
+			fileCount++
+			if e.verboseLevel >= 3 {
+				util.VerbosePrintf(e.verboseLevel, 3, "Found file (%s): %s", side, relPath)
+			} else if e.verboseLevel >= 2 && fileCount%100 == 0 {
+				util.VerbosePrintf(e.verboseLevel, 2, "Scanned %d files in %s...", fileCount, side)
+			}
 		}
 
 		// Create FileInfo
@@ -135,9 +178,11 @@ func (e *Engine) collectFiles(dir string) (map[string]*FileInfo, error) {
 
 		// Calculate hash for files (not directories)
 		if !info.IsDir() {
+			util.VerbosePrintf(e.verboseLevel, 3, "Calculating hash (%s): %s", side, relPath)
 			hash, err := e.calculateHash(path)
 			if err != nil {
 				// Log error but don't fail - we'll mark as different
+				util.VerbosePrintf(e.verboseLevel, 2, "Hash calculation failed (%s): %s - %v", side, relPath, err)
 				fileInfo.Hash = "ERROR_CALCULATING_HASH"
 			} else {
 				fileInfo.Hash = hash
@@ -147,6 +192,10 @@ func (e *Engine) collectFiles(dir string) (map[string]*FileInfo, error) {
 		files[relPath] = fileInfo
 		return nil
 	})
+
+	if e.verboseLevel >= 2 {
+		util.VerbosePrintf(e.verboseLevel, 2, "Completed scan of %s: %d files found", side, fileCount)
+	}
 
 	return files, err
 }
