@@ -34,6 +34,7 @@ var (
 	outputFile        string
 	showDiff          bool
 	showDiffFile      string
+	includeIdentical  bool
 	ignoreWhitespace  bool
 	excludeNames      []string
 	excludePaths      []string
@@ -46,6 +47,7 @@ func init() {
 
 	// Output options
 	diffCmd.Flags().StringVarP(&outputFile, "output", "o", "", "output action file path (required unless --show-diff)")
+	diffCmd.Flags().BoolVar(&includeIdentical, "include-identical", false, "include identical files in action file (default: only show different files)")
 
 	// Display options
 	diffCmd.Flags().BoolVar(&showDiff, "show-diff", false, "display inline diffs instead of generating action file")
@@ -196,7 +198,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		defer file.Close()
 
 		generator := action.NewGenerator(rootCmd.Version)
-		if err := generator.GenerateActionFile(file, results, leftDir, rightDir, summary); err != nil {
+		if err := generator.GenerateActionFile(file, results, leftDir, rightDir, summary, includeIdentical); err != nil {
 			return fmt.Errorf("failed to generate action file: %w", err)
 		}
 

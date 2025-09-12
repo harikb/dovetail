@@ -28,6 +28,7 @@ func (g *Generator) GenerateActionFile(
 	results []compare.ComparisonResult,
 	leftDir, rightDir string,
 	summary *compare.ComparisonSummary,
+	includeIdentical bool,
 ) error {
 	header := ActionFileHeader{
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
@@ -42,7 +43,7 @@ func (g *Generator) GenerateActionFile(
 	}
 
 	// Convert comparison results to action items and sort them
-	actionItems := g.convertToActionItems(results)
+	actionItems := g.convertToActionItems(results, includeIdentical)
 	sort.Slice(actionItems, func(i, j int) bool {
 		return actionItems[i].RelativePath < actionItems[j].RelativePath
 	})
@@ -118,14 +119,12 @@ func (g *Generator) writeHeader(writer io.Writer, header ActionFileHeader, summa
 }
 
 // convertToActionItems converts comparison results to action items
-func (g *Generator) convertToActionItems(results []compare.ComparisonResult) []ActionItem {
+func (g *Generator) convertToActionItems(results []compare.ComparisonResult, includeIdentical bool) []ActionItem {
 	var items []ActionItem
 
 	for _, result := range results {
-		// Skip identical files unless they are directories (for structural clarity)
-		if result.Status == compare.StatusIdentical &&
-			((result.LeftInfo != nil && !result.LeftInfo.IsDir) ||
-				(result.RightInfo != nil && !result.RightInfo.IsDir)) {
+		// Skip identical files unless explicitly requested
+		if result.Status == compare.StatusIdentical && !includeIdentical {
 			continue
 		}
 
