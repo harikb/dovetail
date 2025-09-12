@@ -1,0 +1,5 @@
+[general]
+verbose = 3
+
+[exclusions]
+paths = ["frontend/dist/"]

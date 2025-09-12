@@ -78,9 +78,22 @@ func (f *Filter) matchesExcludePath(relPath string) bool {
 			return true
 		}
 
-		// Prefix match (for directory exclusion)
-		if strings.HasPrefix(normalizedPath, normalizedExclude+"/") {
-			return true
+		// For directory-style exclusions (paths ending with /),
+		// check if the file path starts with the directory path
+		if strings.HasSuffix(normalizedExclude, "/") {
+			if strings.HasPrefix(normalizedPath, normalizedExclude) {
+				return true
+			}
+			// Also check without the trailing slash for exact directory matches
+			dirPath := strings.TrimSuffix(normalizedExclude, "/")
+			if normalizedPath == dirPath {
+				return true
+			}
+		} else {
+			// For paths not ending with /, check prefix with added slash
+			if strings.HasPrefix(normalizedPath, normalizedExclude+"/") {
+				return true
+			}
 		}
 
 		// Suffix match (for file exclusion in any directory)
