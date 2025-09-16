@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -10,6 +11,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/harikb/dovetail/internal/compare"
 )
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 // App represents the main TUI application
 type App struct {
@@ -111,12 +119,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 
 	case diffLoadedMsg:
-		m.currentDiff = string(msg)
+		// Debug: Check what we're actually receiving - write to file instead of stdout
+		diffContent := string(msg)
+
+		// Write debug to file since TUI hides stdout/stderr
+		if debugFile, err := os.OpenFile("debug_tui.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+			fmt.Fprintf(debugFile, "=== DIFF DEBUG ===\n")
+			fmt.Fprintf(debugFile, "Length: %d\n", len(diffContent))
+			fmt.Fprintf(debugFile, "First 500 chars: %q\n", diffContent[:min(500, len(diffContent))])
+			fmt.Fprintf(debugFile, "==================\n\n")
+			debugFile.Close()
+		}
+
+		// Make a defensive copy to avoid any sharing issues
+		m.currentDiff = string([]byte(diffContent))
 		m.showingDiff = true
 		return m, nil
 
 	case diffErrorMsg:
 		m.err = error(msg)
+		m.showingDiff = true // Show the error in diff view
 		return m, nil
 	}
 
@@ -199,11 +221,11 @@ func (m Model) loadDiff() tea.Cmd {
 			// Use Unix diff command with enhanced colorization and formatting
 			var cmd *exec.Cmd
 			if _, err := exec.LookPath("colordiff"); err == nil {
-				// Use colordiff with color output and context lines for better readability
-				cmd = exec.Command("colordiff", "--color=always", "-u", "-C3", leftPath, rightPath)
+				// Use colordiff with color output and unified format with 3 lines of context
+				cmd = exec.Command("colordiff", "--color=always", "-u", "-U3", leftPath, rightPath)
 			} else {
-				// Fall back to regular diff with unified format and context lines
-				cmd = exec.Command("diff", "-u", "-C3", leftPath, rightPath)
+				// Fall back to regular diff with unified format and 3 lines of context
+				cmd = exec.Command("diff", "-u", "-U3", leftPath, rightPath)
 			}
 
 			output, err := cmd.Output()
@@ -315,30 +337,43 @@ func (m Model) viewFileList() string {
 
 // viewDiff renders the diff view
 func (m Model) viewDiff() string {
-	var b strings.Builder
+	var output strings.Builder
+
+	// Add enough blank lines to clear the previous screen content
+	// This ensures old file list doesn't bleed through
+	for i := 0; i < m.windowHeight; i++ {
+		output.WriteString(strings.Repeat(" ", m.windowWidth) + "\n")
+	}
+
+	// Reset cursor to top and start fresh content
+	output.WriteString("\033[H") // Move cursor to top-left
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
 	if m.cursor < len(m.results) {
 		result := m.results[m.cursor]
-		b.WriteString(headerStyle.Render(fmt.Sprintf("Diff: %s", result.RelativePath)))
-		b.WriteString("\n\n")
+
+		// Styled header
+		header := fmt.Sprintf("Diff: %s", result.RelativePath)
+		output.WriteString(headerStyle.Render(header))
+		output.WriteString("\n\n")
 
 		if m.err != nil {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-			b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
+			errorMsg := fmt.Sprintf("Error: %v", m.err)
+			output.WriteString(errorStyle.Render(errorMsg))
 		} else {
-			// Display diff content
-			b.WriteString(m.currentDiff)
+			// Output clean diff content
+			output.WriteString(m.currentDiff)
 		}
 	}
 
-	// Footer
-	b.WriteString("\n\n")
+	// Footer with styling
+	output.WriteString("\n\n")
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	b.WriteString(helpStyle.Render("Esc/q: back to file list  Ctrl+C: quit"))
+	output.WriteString(helpStyle.Render("Esc/q: back to file list  Ctrl+C: quit"))
 
-	return b.String()
+	return output.String()
 }
 
 // getStatusColor returns the appropriate color for a file status
