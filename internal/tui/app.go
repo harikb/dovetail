@@ -2,9 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -14,6 +18,17 @@ import (
 	"github.com/harikb/dovetail/internal/action"
 	"github.com/harikb/dovetail/internal/compare"
 )
+
+// DiffHunk represents a parsed hunk from unified diff
+type DiffHunk struct {
+	Header     string   // "@@ -10,3 +10,4 @@"
+	LeftStart  int      // Starting line number in left file
+	LeftCount  int      // Number of lines in left file
+	RightStart int      // Starting line number in right file
+	RightCount int      // Number of lines in right file
+	Lines      []string // The actual hunk content lines
+	Applied    bool     // Whether this hunk has been applied
+}
 
 // App represents the main TUI application
 type App struct {
@@ -116,6 +131,14 @@ type Model struct {
 	searchString  string // Current search term
 	searchMatches []int  // Indices of matching files
 	matchIndex    int    // Current match position (0-based)
+
+	// Hunk mode functionality
+	hunkMode      bool       // Are we in hunk editing mode?
+	hunks         []DiffHunk // Parsed hunks from current diff
+	currentHunk   int        // Currently selected hunk (0-based)
+	tempLeftFile  string     // Path to temp left clone (if created)
+	tempRightFile string     // Path to temp right clone (if created)
+	appliedHunks  []bool     // Track which hunks have been applied (UI only)
 }
 
 // Init initializes the model (required by bubbletea)
@@ -171,7 +194,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
-		if m.showingDiff {
+		if m.hunkMode {
+			// Exit hunk mode, save patches if any changes made
+			return m.exitHunkMode()
+		} else if m.showingDiff {
 			// Return to file list
 			m.showingDiff = false
 			m.currentDiff = ""
@@ -198,15 +224,24 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.showingDiff && !m.showingSave && len(m.results) > 0 {
 			// Load diff for selected file
 			return m, m.loadDiff()
+		} else if m.showingDiff && !m.hunkMode {
+			// Enter hunk mode for selective editing
+			return m.enterHunkMode(), nil
 		}
 
-	// Interactive action keys - only in file list view
+	// Interactive action keys - file list view or hunk mode
 	case ">":
-		if !m.showingDiff && !m.showingSave && len(m.results) > 0 {
+		if m.hunkMode && len(m.hunks) > 0 {
+			// Apply current hunk left→right
+			return m.applyCurrentHunk("left-to-right")
+		} else if !m.showingDiff && !m.showingSave && len(m.results) > 0 {
 			return m.setAction(action.ActionCopyToRight), nil
 		}
 	case "<":
-		if !m.showingDiff && !m.showingSave && len(m.results) > 0 {
+		if m.hunkMode && len(m.hunks) > 0 {
+			// Apply current hunk right→left
+			return m.applyCurrentHunk("right-to-left")
+		} else if !m.showingDiff && !m.showingSave && len(m.results) > 0 {
 			return m.setAction(action.ActionCopyToLeft), nil
 		}
 	case "i":
@@ -242,15 +277,25 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchString = ""
 		}
 	case "n":
-		if !m.showingDiff && !m.showingSave {
+		if m.hunkMode && len(m.hunks) > 0 {
+			// Next hunk in hunk mode
+			if m.currentHunk < len(m.hunks)-1 {
+				m.currentHunk++
+			}
+		} else if !m.showingDiff && !m.showingSave {
 			if len(m.searchMatches) > 0 {
 				m = m.nextSearchMatch()
 			} else if m.searchString == "" {
 				m.saveMessage = "No active search"
 			}
 		}
-	case "N":
-		if !m.showingDiff && !m.showingSave {
+	case "N", "p":
+		if m.hunkMode && len(m.hunks) > 0 {
+			// Previous hunk in hunk mode
+			if m.currentHunk > 0 {
+				m.currentHunk--
+			}
+		} else if msg.String() == "N" && !m.showingDiff && !m.showingSave {
 			if len(m.searchMatches) > 0 {
 				m = m.prevSearchMatch()
 			} else if m.searchString == "" {
@@ -457,24 +502,102 @@ func (m Model) viewDiff() string {
 
 	if m.cursor < len(m.results) {
 		result := m.results[m.cursor]
-		b.WriteString(headerStyle.Render(fmt.Sprintf("Diff: %s", result.RelativePath)))
+
+		// Show different header for hunk mode
+		if m.hunkMode {
+			b.WriteString(headerStyle.Render(fmt.Sprintf("Hunk Mode: %s (Hunk %d of %d)",
+				result.RelativePath, m.currentHunk+1, len(m.hunks))))
+		} else {
+			b.WriteString(headerStyle.Render(fmt.Sprintf("Diff: %s", result.RelativePath)))
+		}
 		b.WriteString("\n\n")
 
 		if m.err != nil {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 			b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 		} else {
-			// Display diff content
-			b.WriteString(m.currentDiff)
+			// Display diff content with hunk highlighting if in hunk mode
+			if m.hunkMode && len(m.hunks) > 0 {
+				b.WriteString(m.renderDiffWithHunkHighlight())
+			} else {
+				b.WriteString(m.currentDiff)
+			}
 		}
 	}
 
-	// Footer
+	// Footer - different help for hunk mode
 	b.WriteString("\n\n")
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	b.WriteString(helpStyle.Render("Esc/q: back to file list  Ctrl+C: quit"))
+	if m.hunkMode {
+		appliedCount := 0
+		for _, applied := range m.appliedHunks {
+			if applied {
+				appliedCount++
+			}
+		}
+		b.WriteString(helpStyle.Render(fmt.Sprintf("n/p: next/prev hunk  >: apply left→right  <: apply right→left  ESC: exit hunk mode")))
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render(fmt.Sprintf("Applied: %d hunks", appliedCount)))
+	} else {
+		b.WriteString(helpStyle.Render("SPACE: enter hunk mode  Esc/q: back to file list  Ctrl+C: quit"))
+	}
 
 	return b.String()
+}
+
+// renderDiffWithHunkHighlight renders diff content with current hunk highlighted
+func (m Model) renderDiffWithHunkHighlight() string {
+	if len(m.hunks) == 0 {
+		return m.currentDiff
+	}
+
+	lines := strings.Split(m.currentDiff, "\n")
+	var result strings.Builder
+	currentHunkLines := make(map[string]bool)
+
+	// Mark lines that belong to current hunk
+	if m.currentHunk < len(m.hunks) {
+		hunk := m.hunks[m.currentHunk]
+		for _, line := range hunk.Lines {
+			currentHunkLines[line] = true
+		}
+	}
+
+	// Render with highlighting
+	hunkStyle := lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15"))
+	appliedStyle := lipgloss.NewStyle().Background(lipgloss.Color("10")).Foreground(lipgloss.Color("0"))
+
+	for i, line := range lines {
+		if currentHunkLines[line] {
+			// Highlight current hunk
+			result.WriteString(hunkStyle.Render(fmt.Sprintf(">>> %s", line)))
+		} else if m.isLineFromAppliedHunk(line) {
+			// Mark applied hunks differently
+			result.WriteString(appliedStyle.Render(fmt.Sprintf("✓   %s", line)))
+		} else {
+			result.WriteString(fmt.Sprintf("    %s", line))
+		}
+
+		if i < len(lines)-1 {
+			result.WriteString("\n")
+		}
+	}
+
+	return result.String()
+}
+
+// isLineFromAppliedHunk checks if a line belongs to an applied hunk
+func (m Model) isLineFromAppliedHunk(line string) bool {
+	for i, applied := range m.appliedHunks {
+		if applied && i < len(m.hunks) {
+			for _, hunkLine := range m.hunks[i].Lines {
+				if hunkLine == line {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // setAction sets the action for the currently selected file with validation
@@ -771,4 +894,390 @@ func highlightSearch(text, search string) string {
 	}
 
 	return result
+}
+
+// enterHunkMode parses current diff into hunks and enters hunk editing mode
+func (m Model) enterHunkMode() Model {
+	if m.cursor >= len(m.results) {
+		return m
+	}
+
+	// Parse diff content into hunks
+	hunks, err := parseDiffIntoHunks(m.currentDiff)
+	if err != nil {
+		m.saveMessage = fmt.Sprintf("Error parsing diff: %v", err)
+		return m
+	}
+
+	if len(hunks) == 0 {
+		m.saveMessage = "No editable hunks found in diff"
+		return m
+	}
+
+	// Initialize hunk mode state
+	m.hunkMode = true
+	m.hunks = hunks
+	m.currentHunk = 0
+	m.appliedHunks = make([]bool, len(hunks))
+	m.saveMessage = fmt.Sprintf("Hunk mode: %d hunks available", len(hunks))
+
+	return m
+}
+
+// exitHunkMode exits hunk editing mode and handles patch generation
+func (m Model) exitHunkMode() (Model, tea.Cmd) {
+	if !m.hunkMode {
+		return m, nil
+	}
+
+	// Check if any hunks were applied
+	anyApplied := false
+	for _, applied := range m.appliedHunks {
+		if applied {
+			anyApplied = true
+			break
+		}
+	}
+
+	// Clean up state
+	m.hunkMode = false
+	m.hunks = nil
+	m.currentHunk = 0
+	m.appliedHunks = nil
+
+	if anyApplied {
+		// Generate patch file and update action
+		return m.generatePatchFile()
+	}
+
+	// Clean up temp files if no changes made
+	m.cleanupTempFiles()
+	m.saveMessage = "Exited hunk mode - no changes made"
+	return m, nil
+}
+
+// applyCurrentHunk applies the currently selected hunk in the specified direction
+func (m Model) applyCurrentHunk(direction string) (Model, tea.Cmd) {
+	if !m.hunkMode || m.currentHunk >= len(m.hunks) {
+		return m, nil
+	}
+
+	if m.appliedHunks[m.currentHunk] {
+		m.saveMessage = fmt.Sprintf("Hunk %d already applied", m.currentHunk+1)
+		return m, nil
+	}
+
+	// Create temp files if not already created
+	if err := m.ensureTempFiles(); err != nil {
+		m.saveMessage = fmt.Sprintf("Error creating temp files: %v", err)
+		return m, nil
+	}
+
+	// Apply the hunk
+	hunk := m.hunks[m.currentHunk]
+	if err := m.applyHunkToTempFile(hunk, direction); err != nil {
+		m.saveMessage = fmt.Sprintf("Error applying hunk: %v", err)
+		return m, nil
+	}
+
+	// Mark hunk as applied
+	m.appliedHunks[m.currentHunk] = true
+	appliedCount := 0
+	for _, applied := range m.appliedHunks {
+		if applied {
+			appliedCount++
+		}
+	}
+
+	m.saveMessage = fmt.Sprintf("Applied hunk %d/%d (%s)", m.currentHunk+1, len(m.hunks), direction)
+
+	// Regenerate diff with updated temp files
+	return m, m.loadDiff()
+}
+
+// parseDiffIntoHunks parses unified diff content into individual hunks
+func parseDiffIntoHunks(diffContent string) ([]DiffHunk, error) {
+	lines := strings.Split(diffContent, "\n")
+	var hunks []DiffHunk
+	var currentHunk *DiffHunk
+
+	// Regex for parsing hunk headers: @@ -10,3 +10,4 @@
+	hunkHeaderRegex := regexp.MustCompile(`^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@`)
+
+	for _, line := range lines {
+		// Check for hunk header
+		if matches := hunkHeaderRegex.FindStringSubmatch(line); matches != nil {
+			// Save previous hunk if any
+			if currentHunk != nil {
+				hunks = append(hunks, *currentHunk)
+			}
+
+			// Parse new hunk header
+			leftStart, _ := strconv.Atoi(matches[1])
+			leftCount := 1
+			if matches[2] != "" {
+				leftCount, _ = strconv.Atoi(matches[2])
+			}
+			rightStart, _ := strconv.Atoi(matches[3])
+			rightCount := 1
+			if matches[4] != "" {
+				rightCount, _ = strconv.Atoi(matches[4])
+			}
+
+			currentHunk = &DiffHunk{
+				Header:     line,
+				LeftStart:  leftStart,
+				LeftCount:  leftCount,
+				RightStart: rightStart,
+				RightCount: rightCount,
+				Lines:      []string{line},
+				Applied:    false,
+			}
+		} else if currentHunk != nil {
+			// Add line to current hunk (context, additions, deletions)
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+				currentHunk.Lines = append(currentHunk.Lines, line)
+			}
+		}
+	}
+
+	// Don't forget the last hunk
+	if currentHunk != nil {
+		hunks = append(hunks, *currentHunk)
+	}
+
+	return hunks, nil
+}
+
+// ensureTempFiles creates temp clone files if they don't exist
+func (m *Model) ensureTempFiles() error {
+	if m.cursor >= len(m.results) {
+		return fmt.Errorf("invalid cursor position")
+	}
+
+	result := m.results[m.cursor]
+
+	// Create temp directory if needed
+	tempDir, err := ioutil.TempDir("", "dovetail_hunks_")
+	if err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	// Create temp left file if needed and file exists
+	if result.LeftInfo != nil && !result.LeftInfo.IsDir && m.tempLeftFile == "" {
+		leftPath := filepath.Join(m.leftDir, result.RelativePath)
+		m.tempLeftFile = filepath.Join(tempDir, "left_"+filepath.Base(result.RelativePath))
+
+		if err := copyFile(leftPath, m.tempLeftFile); err != nil {
+			return fmt.Errorf("failed to copy left file: %w", err)
+		}
+	}
+
+	// Create temp right file if needed and file exists
+	if result.RightInfo != nil && !result.RightInfo.IsDir && m.tempRightFile == "" {
+		rightPath := filepath.Join(m.rightDir, result.RelativePath)
+		m.tempRightFile = filepath.Join(tempDir, "right_"+filepath.Base(result.RelativePath))
+
+		if err := copyFile(rightPath, m.tempRightFile); err != nil {
+			return fmt.Errorf("failed to copy right file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// applyHunkToTempFile applies a hunk to the appropriate temp file
+func (m *Model) applyHunkToTempFile(hunk DiffHunk, direction string) error {
+	// Create a temporary patch file with just this hunk
+	patchContent := strings.Join(hunk.Lines, "\n") + "\n"
+
+	tempPatch, err := ioutil.TempFile("", "hunk_*.patch")
+	if err != nil {
+		return fmt.Errorf("failed to create temp patch: %w", err)
+	}
+	defer os.Remove(tempPatch.Name())
+	defer tempPatch.Close()
+
+	if _, err := tempPatch.WriteString(patchContent); err != nil {
+		return fmt.Errorf("failed to write patch content: %w", err)
+	}
+	tempPatch.Close()
+
+	// Apply patch to appropriate temp file
+	var targetFile string
+	if direction == "left-to-right" {
+		targetFile = m.tempRightFile
+	} else {
+		targetFile = m.tempLeftFile
+	}
+
+	// Use patch command to apply the hunk
+	cmd := exec.Command("patch", targetFile)
+	cmd.Stdin = strings.NewReader(patchContent)
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("patch failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// regenerateDiff regenerates the diff using updated temp files
+func (m *Model) regenerateDiff() (Model, tea.Cmd) {
+	if m.cursor >= len(m.results) {
+		return *m, nil
+	}
+
+	// Generate new diff between temp files (or original if no temp file)
+	result := m.results[m.cursor]
+
+	leftPath := filepath.Join(m.leftDir, result.RelativePath)
+	if m.tempLeftFile != "" {
+		leftPath = m.tempLeftFile
+	}
+
+	rightPath := filepath.Join(m.rightDir, result.RelativePath)
+	if m.tempRightFile != "" {
+		rightPath = m.tempRightFile
+	}
+
+	// Run diff command
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath("colordiff"); err == nil {
+		cmd = exec.Command("colordiff", "--color=always", "-u", "-U3", leftPath, rightPath)
+	} else {
+		cmd = exec.Command("diff", "-u", "-U3", leftPath, rightPath)
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// Normal case - files differ
+			m.currentDiff = string(output)
+		} else {
+			m.saveMessage = fmt.Sprintf("Error regenerating diff: %v", err)
+			return *m, nil
+		}
+	} else {
+		m.currentDiff = string(output)
+	}
+
+	// Re-parse hunks
+	hunks, err := parseDiffIntoHunks(m.currentDiff)
+	if err != nil {
+		m.saveMessage = fmt.Sprintf("Error re-parsing hunks: %v", err)
+		return *m, nil
+	}
+
+	// Update hunk state
+	m.hunks = hunks
+	m.appliedHunks = make([]bool, len(hunks))
+
+	// Reset current hunk if out of bounds
+	if m.currentHunk >= len(hunks) {
+		m.currentHunk = 0
+	}
+
+	return *m, nil
+}
+
+// generatePatchFile generates the final patch file from original to temp files
+func (m *Model) generatePatchFile() (Model, tea.Cmd) {
+	if m.cursor >= len(m.results) {
+		return *m, nil
+	}
+
+	result := m.results[m.cursor]
+	timestamp := time.Now().Format("20060102_150405")
+
+	// Generate patch from original to final temp file
+	originalLeft := filepath.Join(m.leftDir, result.RelativePath)
+	originalRight := filepath.Join(m.rightDir, result.RelativePath)
+
+	var patchContent string
+	var patchSide string
+
+	// Determine which side was modified and generate appropriate patch
+	if m.tempLeftFile != "" {
+		// Left side was modified
+		cmd := exec.Command("diff", "-u", originalLeft, m.tempLeftFile)
+		if output, err := cmd.Output(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				patchContent = string(output)
+				patchSide = "left"
+			}
+		}
+	} else if m.tempRightFile != "" {
+		// Right side was modified
+		cmd := exec.Command("diff", "-u", originalRight, m.tempRightFile)
+		if output, err := cmd.Output(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				patchContent = string(output)
+				patchSide = "right"
+			}
+		}
+	}
+
+	if patchContent == "" {
+		m.saveMessage = "No changes to save"
+		m.cleanupTempFiles()
+		return *m, nil
+	}
+
+	// Save patch file as sibling to original file
+	var patchDir string
+	if patchSide == "left" {
+		patchDir = filepath.Dir(filepath.Join(m.leftDir, result.RelativePath))
+	} else {
+		patchDir = filepath.Dir(filepath.Join(m.rightDir, result.RelativePath))
+	}
+
+	patchFilename := filepath.Base(result.RelativePath) + "." + timestamp + ".patch"
+	patchPath := filepath.Join(patchDir, patchFilename)
+
+	if err := ioutil.WriteFile(patchPath, []byte(patchContent), 0644); err != nil {
+		m.saveMessage = fmt.Sprintf("Error saving patch: %v", err)
+		m.cleanupTempFiles()
+		return *m, nil
+	}
+
+	// Update action to patch type
+	m.fileActions[result.RelativePath] = action.ActionType(999) // Temporary - need to add patch action type
+	m.hasChanges = true
+	m.saveMessage = fmt.Sprintf("Patch saved: %s", patchPath)
+
+	// Clean up temp files
+	m.cleanupTempFiles()
+
+	return *m, nil
+}
+
+// cleanupTempFiles removes temporary files
+func (m *Model) cleanupTempFiles() {
+	if m.tempLeftFile != "" {
+		os.Remove(m.tempLeftFile)
+		m.tempLeftFile = ""
+	}
+	if m.tempRightFile != "" {
+		os.Remove(m.tempRightFile)
+		m.tempRightFile = ""
+	}
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = destFile.ReadFrom(sourceFile)
+	return err
 }
