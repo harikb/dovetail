@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,9 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 		}
 	}
 
+	// Sort results with directory-aware sorting for better organization
+	sortResultsByDirectory(filteredResults)
+
 	model := Model{
 		results:      filteredResults,
 		summary:      summary,
@@ -38,6 +42,35 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 	}
 
 	return &App{model: model}
+}
+
+// sortResultsByDirectory sorts comparison results with directory-aware grouping
+// Files in the same directory will be grouped together, with directories sorted alphabetically
+func sortResultsByDirectory(results []compare.ComparisonResult) {
+	sort.Slice(results, func(i, j int) bool {
+		pathA := strings.Split(results[i].RelativePath, "/")
+		pathB := strings.Split(results[j].RelativePath, "/")
+
+		// Compare directory paths element by element
+		minLen := len(pathA) - 1 // Don't include filename in directory comparison
+		if len(pathB)-1 < minLen {
+			minLen = len(pathB) - 1
+		}
+
+		for k := 0; k < minLen; k++ {
+			if pathA[k] != pathB[k] {
+				return pathA[k] < pathB[k]
+			}
+		}
+
+		// If one path is a subdirectory of the other, shorter path (parent directory) comes first
+		if len(pathA) != len(pathB) {
+			return len(pathA) < len(pathB)
+		}
+
+		// Same directory depth, sort by filename
+		return pathA[len(pathA)-1] < pathB[len(pathB)-1]
+	})
 }
 
 // Run starts the TUI application
@@ -93,8 +126,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKeyPress processes keyboard input
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c":
 		return m, tea.Quit
+
+	case "q":
+		if m.showingDiff {
+			// In diff view, q goes back to file list (same as esc)
+			m.showingDiff = false
+			m.currentDiff = ""
+			m.err = nil
+		} else {
+			// In file list, q quits the application
+			return m, tea.Quit
+		}
 
 	case "esc":
 		if m.showingDiff {
@@ -152,12 +196,14 @@ func (m Model) loadDiff() tea.Cmd {
 			leftPath := fmt.Sprintf("%s/%s", m.leftDir, result.RelativePath)
 			rightPath := fmt.Sprintf("%s/%s", m.rightDir, result.RelativePath)
 
-			// Use Unix diff command (same as the main diff functionality)
+			// Use Unix diff command with enhanced colorization and formatting
 			var cmd *exec.Cmd
 			if _, err := exec.LookPath("colordiff"); err == nil {
-				cmd = exec.Command("colordiff", "-u", leftPath, rightPath)
+				// Use colordiff with color output and context lines for better readability
+				cmd = exec.Command("colordiff", "--color=always", "-u", "-C3", leftPath, rightPath)
 			} else {
-				cmd = exec.Command("diff", "-u", leftPath, rightPath)
+				// Fall back to regular diff with unified format and context lines
+				cmd = exec.Command("diff", "-u", "-C3", leftPath, rightPath)
 			}
 
 			output, err := cmd.Output()
@@ -290,7 +336,7 @@ func (m Model) viewDiff() string {
 	// Footer
 	b.WriteString("\n\n")
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	b.WriteString(helpStyle.Render("Esc: back to file list  q: quit"))
+	b.WriteString(helpStyle.Render("Esc/q: back to file list  Ctrl+C: quit"))
 
 	return b.String()
 }
