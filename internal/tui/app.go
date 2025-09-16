@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -11,13 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/harikb/dovetail/internal/compare"
 )
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // App represents the main TUI application
 type App struct {
@@ -119,20 +111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 
 	case diffLoadedMsg:
-		// Debug: Check what we're actually receiving - write to file instead of stdout
-		diffContent := string(msg)
-
-		// Write debug to file since TUI hides stdout/stderr
-		if debugFile, err := os.OpenFile("debug_tui.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-			fmt.Fprintf(debugFile, "=== DIFF DEBUG ===\n")
-			fmt.Fprintf(debugFile, "Length: %d\n", len(diffContent))
-			fmt.Fprintf(debugFile, "First 500 chars: %q\n", diffContent[:min(500, len(diffContent))])
-			fmt.Fprintf(debugFile, "==================\n\n")
-			debugFile.Close()
-		}
-
-		// Make a defensive copy to avoid any sharing issues
-		m.currentDiff = string([]byte(diffContent))
+		m.currentDiff = string(msg)
 		m.showingDiff = true
 		return m, nil
 
@@ -337,43 +316,30 @@ func (m Model) viewFileList() string {
 
 // viewDiff renders the diff view
 func (m Model) viewDiff() string {
-	var output strings.Builder
-
-	// Add enough blank lines to clear the previous screen content
-	// This ensures old file list doesn't bleed through
-	for i := 0; i < m.windowHeight; i++ {
-		output.WriteString(strings.Repeat(" ", m.windowWidth) + "\n")
-	}
-
-	// Reset cursor to top and start fresh content
-	output.WriteString("\033[H") // Move cursor to top-left
+	var b strings.Builder
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
 	if m.cursor < len(m.results) {
 		result := m.results[m.cursor]
-
-		// Styled header
-		header := fmt.Sprintf("Diff: %s", result.RelativePath)
-		output.WriteString(headerStyle.Render(header))
-		output.WriteString("\n\n")
+		b.WriteString(headerStyle.Render(fmt.Sprintf("Diff: %s", result.RelativePath)))
+		b.WriteString("\n\n")
 
 		if m.err != nil {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-			errorMsg := fmt.Sprintf("Error: %v", m.err)
-			output.WriteString(errorStyle.Render(errorMsg))
+			b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 		} else {
-			// Output clean diff content
-			output.WriteString(m.currentDiff)
+			// Display diff content
+			b.WriteString(m.currentDiff)
 		}
 	}
 
-	// Footer with styling
-	output.WriteString("\n\n")
+	// Footer
+	b.WriteString("\n\n")
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	output.WriteString(helpStyle.Render("Esc/q: back to file list  Ctrl+C: quit"))
+	b.WriteString(helpStyle.Render("Esc/q: back to file list  Ctrl+C: quit"))
 
-	return output.String()
+	return b.String()
 }
 
 // getStatusColor returns the appropriate color for a file status
