@@ -181,9 +181,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchString = ""
 			m.searchMatches = nil
 			m.matchIndex = 0
-		} else {
-			return m, tea.Quit
 		}
+		// Note: ESC no longer quits app in normal mode - too dangerous
 
 	case "up", "k":
 		if !m.showingDiff && m.cursor > 0 {
@@ -243,16 +242,20 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchString = ""
 		}
 	case "n":
-		if !m.showingDiff && !m.showingSave && len(m.searchMatches) > 0 {
-			m.nextSearchMatch()
-		} else if m.searchString == "" {
-			m.saveMessage = "No active search"
+		if !m.showingDiff && !m.showingSave {
+			if len(m.searchMatches) > 0 {
+				m = m.nextSearchMatch()
+			} else if m.searchString == "" {
+				m.saveMessage = "No active search"
+			}
 		}
 	case "N":
-		if !m.showingDiff && !m.showingSave && len(m.searchMatches) > 0 {
-			m.prevSearchMatch()
-		} else if m.searchString == "" {
-			m.saveMessage = "No active search"
+		if !m.showingDiff && !m.showingSave {
+			if len(m.searchMatches) > 0 {
+				m = m.prevSearchMatch()
+			} else if m.searchString == "" {
+				m.saveMessage = "No active search"
+			}
 		}
 
 	case "r":
@@ -416,7 +419,7 @@ func (m Model) viewFileList() string {
 			b.WriteString(helpStyle.Render("Enter: search  Esc: cancel"))
 		} else {
 			// Normal help with search commands
-			b.WriteString(helpStyle.Render("↑/↓: navigate  Enter: diff  >: copy→  <: copy←  i: ignore  x: delete  /: search  s: save  q: quit"))
+			b.WriteString(helpStyle.Render("↑/↓: navigate  Enter: diff  >: copy→  <: copy←  i: ignore  x: delete  /: search  s: save  q: quit  Ctrl+C: force quit"))
 			if m.searchString != "" {
 				b.WriteString("\n")
 				b.WriteString(helpStyle.Render("n: next match  N: prev match  Esc: clear search"))
@@ -681,7 +684,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // executeSearch performs the search and updates match list
-func (m Model) executeSearch() {
+func (m *Model) executeSearch() {
 	if m.searchString == "" {
 		return
 	}
@@ -701,32 +704,34 @@ func (m Model) executeSearch() {
 	if len(m.searchMatches) > 0 {
 		m.matchIndex = 0
 		m.cursor = m.searchMatches[0]
-		m.saveMessage = fmt.Sprintf("Found %d matches", len(m.searchMatches))
+		m.saveMessage = fmt.Sprintf("Found %d matches - jumped to first", len(m.searchMatches))
 	} else {
 		m.saveMessage = fmt.Sprintf("'%s' not found", m.searchString)
 	}
 }
 
 // nextSearchMatch moves to next search match
-func (m Model) nextSearchMatch() {
+func (m Model) nextSearchMatch() Model {
 	if len(m.searchMatches) == 0 {
-		return
+		return m
 	}
 
 	m.matchIndex = (m.matchIndex + 1) % len(m.searchMatches)
 	m.cursor = m.searchMatches[m.matchIndex]
 	m.saveMessage = fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches))
+	return m
 }
 
 // prevSearchMatch moves to previous search match
-func (m Model) prevSearchMatch() {
+func (m Model) prevSearchMatch() Model {
 	if len(m.searchMatches) == 0 {
-		return
+		return m
 	}
 
 	m.matchIndex = (m.matchIndex - 1 + len(m.searchMatches)) % len(m.searchMatches)
 	m.cursor = m.searchMatches[m.matchIndex]
 	m.saveMessage = fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches))
+	return m
 }
 
 // highlightSearch highlights search terms in text
