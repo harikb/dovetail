@@ -220,7 +220,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 
-	case "enter", "space":
+	case "enter", "space", " ":
 		if !m.showingDiff && !m.showingSave && len(m.results) > 0 {
 			// Load diff for selected file
 			return m, m.loadDiff()
