@@ -1,0 +1,17 @@
+# Cursor Rules for Dovetail Project
+
+## Shell Command Guidelines
+- NEVER use exclamation marks (!) in echo statements or terminal commands
+- Exclamation marks trigger shell history expansion and cause command failures
+- Use periods, dashes, or other punctuation instead
+- Example: Use "Phase 2 Complete" instead of "Phase 2 Complete!"
+
+## Code Style
+- Use meaningful variable names
+- Add comments for complex logic
+- Prefer explicit error handling over silent failures
+
+## Testing
+- Always test TUI changes with actual file comparisons
+- Verify both keyboard navigation and visual output
+- Check edge cases like empty directories or permission errors
