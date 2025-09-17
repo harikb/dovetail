@@ -28,6 +28,17 @@ func SetProfilingCleanup(cleanup func()) {
 	getProfilingCleanup = func() func() { return cleanup }
 }
 
+// getVisibleFileListLines calculates how many file lines can fit in the viewport
+func (m Model) getVisibleFileListLines() int {
+	// Reserve space for header, directories, summary, and footer
+	// Approximate: Header(3) + Dirs(3) + Summary(2) + Footer(5) = 13 lines
+	headerLines := 13
+	if m.windowHeight <= headerLines {
+		return 1 // Always show at least 1 line
+	}
+	return m.windowHeight - headerLines
+}
+
 // DiffHunk represents a parsed hunk from unified diff
 type DiffHunk struct {
 	Header     string   // "@@ -10,3 +10,4 @@"
@@ -67,6 +78,7 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 		currentDiff:  "",
 		windowWidth:  80,
 		windowHeight: 24,
+		viewportTop:  0,
 		fileActions:  make(map[string]action.ActionType),
 		patchTimes:   make(map[string]string),
 		hasChanges:   false,
@@ -128,6 +140,7 @@ type Model struct {
 	currentDiff  string // Current diff content
 	windowWidth  int
 	windowHeight int
+	viewportTop  int // First visible line in the viewport
 	err          error
 
 	// Interactive action tracking
@@ -232,11 +245,20 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if !m.showingDiff && m.cursor > 0 {
 			m.cursor--
+			// Auto-scroll viewport if needed
+			if m.cursor < m.viewportTop {
+				m.viewportTop = m.cursor
+			}
 		}
 
 	case "down", "j":
 		if !m.showingDiff && m.cursor < len(m.results)-1 {
 			m.cursor++
+			// Auto-scroll viewport if needed
+			visibleLines := m.getVisibleFileListLines()
+			if m.cursor >= m.viewportTop+visibleLines {
+				m.viewportTop = m.cursor - visibleLines + 1
+			}
 		}
 
 	case "enter", "space", " ":
@@ -246,6 +268,36 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.showingDiff && !m.hunkMode {
 			// Enter hunk mode for selective editing
 			return m.enterHunkMode(), nil
+		}
+
+	case "pgup", "page_up":
+		if !m.showingDiff && len(m.results) > 0 {
+			// Page up - jump by visible lines
+			visibleLines := m.getVisibleFileListLines()
+			if m.cursor >= visibleLines {
+				m.cursor -= visibleLines
+				m.viewportTop = m.cursor
+			} else {
+				m.cursor = 0
+				m.viewportTop = 0
+			}
+		}
+
+	case "pgdown", "page_down":
+		if !m.showingDiff && len(m.results) > 0 {
+			// Page down - jump by visible lines
+			visibleLines := m.getVisibleFileListLines()
+			if m.cursor+visibleLines < len(m.results) {
+				m.cursor += visibleLines
+				m.viewportTop = m.cursor
+			} else {
+				m.cursor = len(m.results) - 1
+				// Adjust viewport to show last page
+				m.viewportTop = len(m.results) - visibleLines
+				if m.viewportTop < 0 {
+					m.viewportTop = 0
+				}
+			}
 		}
 
 	// Interactive action keys - file list view or hunk mode
@@ -446,7 +498,24 @@ func (m Model) viewFileList() string {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Files with differences:"))
 		b.WriteString("\n\n")
 
-		for i, result := range m.results {
+		// Calculate viewport boundaries for performance with large lists
+		visibleLines := m.getVisibleFileListLines()
+		viewportEnd := m.viewportTop + visibleLines
+		if viewportEnd > len(m.results) {
+			viewportEnd = len(m.results)
+		}
+
+		// Show viewport info for large lists
+		if len(m.results) > visibleLines {
+			viewportInfo := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+			b.WriteString(viewportInfo.Render(fmt.Sprintf("Showing %d-%d of %d files",
+				m.viewportTop+1, viewportEnd, len(m.results))))
+			b.WriteString("\n\n")
+		}
+
+		// Only render visible items (CRITICAL for performance)
+		for i := m.viewportTop; i < viewportEnd; i++ {
+			result := m.results[i]
 			statusColor := getStatusColor(result.Status)
 			statusStyle := lipgloss.NewStyle().Foreground(statusColor)
 
