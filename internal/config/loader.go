@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/harikb/dovetail/internal/util"
 )
 
 // Loader handles loading and parsing configuration files
@@ -38,7 +39,7 @@ func (l *Loader) Load(explicitConfigPath string) (*Config, error) {
 				}
 				// Non-explicit config file failed - log if verbose but continue
 				if l.verboseLevel >= 2 {
-					fmt.Fprintf(os.Stderr, "Warning: Failed to load config from %s: %v\n", configPath.Path, err)
+					util.LogWarning("Failed to load config from %s: %v", configPath.Path, err)
 				}
 				continue
 			}
@@ -48,7 +49,7 @@ func (l *Loader) Load(explicitConfigPath string) (*Config, error) {
 			loadedConfigs = append(loadedConfigs, fmt.Sprintf("%s (%s)", configPath.Path, configPath.Source))
 
 			if l.verboseLevel >= 2 {
-				fmt.Fprintf(os.Stderr, "Loaded config from: %s\n", configPath.Path)
+				util.LogInfo("Loaded config from: %s", configPath.Path)
 			}
 
 			// If explicit path was specified and found, stop here
@@ -59,7 +60,7 @@ func (l *Loader) Load(explicitConfigPath string) (*Config, error) {
 	}
 
 	if l.verboseLevel >= 1 && len(loadedConfigs) > 0 {
-		fmt.Fprintf(os.Stderr, "Configuration loaded from: %s\n", loadedConfigs)
+		util.LogInfo("Configuration loaded from: %s", loadedConfigs)
 	}
 
 	return config, nil
@@ -111,7 +112,7 @@ func (l *Loader) validateConfig(config *Config, path string) error {
 		if !strings.HasSuffix(path, "/") && !strings.Contains(path, ".") {
 			config.Exclusions.Paths[i] = path + "/"
 			if l.verboseLevel >= 2 {
-				fmt.Fprintf(os.Stderr, "Auto-corrected exclusion path: '%s' -> '%s'\n", path, config.Exclusions.Paths[i])
+				util.LogInfo("Auto-corrected exclusion path: '%s' -> '%s'", path, config.Exclusions.Paths[i])
 			}
 		}
 	}

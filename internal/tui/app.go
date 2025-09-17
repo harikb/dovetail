@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/harikb/dovetail/internal/action"
 	"github.com/harikb/dovetail/internal/compare"
+	"github.com/harikb/dovetail/internal/util"
 )
 
 // getProfilingCleanup provides access to profiling cleanup function
@@ -33,6 +34,17 @@ func (m Model) getVisibleFileListLines() int {
 	// Reserve space for header, directories, summary, and footer
 	// Approximate: Header(3) + Dirs(3) + Summary(2) + Footer(5) = 13 lines
 	headerLines := 13
+	if m.windowHeight <= headerLines {
+		return 1 // Always show at least 1 line
+	}
+	return m.windowHeight - headerLines
+}
+
+// getVisibleDiffLines calculates how many diff lines can fit in the diff viewport
+func (m Model) getVisibleDiffLines() int {
+	// Reserve space for header and footer in diff view
+	// Approximate: Header(3) + Footer(3) = 6 lines
+	headerLines := 6
 	if m.windowHeight <= headerLines {
 		return 1 // Always show at least 1 line
 	}
@@ -56,7 +68,7 @@ type App struct {
 }
 
 // NewApp creates a new TUI application
-func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSummary, leftDir, rightDir string) *App {
+func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSummary, leftDir, rightDir string, ignoreWhitespace bool) *App {
 	// Filter out identical files for the UI (focus on differences)
 	var filteredResults []compare.ComparisonResult
 	for _, result := range results {
@@ -65,24 +77,27 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 		}
 	}
 
-	// Sort results with directory-aware sorting for better organization
-	sortResultsByDirectory(filteredResults)
+	// Sort results alphabetically by path for consistent ordering
+	sort.Slice(filteredResults, func(i, j int) bool {
+		return filteredResults[i].RelativePath < filteredResults[j].RelativePath
+	})
 
 	model := Model{
-		results:      filteredResults,
-		summary:      summary,
-		leftDir:      leftDir,
-		rightDir:     rightDir,
-		cursor:       0,
-		showingDiff:  false,
-		currentDiff:  "",
-		windowWidth:  80,
-		windowHeight: 24,
-		viewportTop:  0,
-		fileActions:  make(map[string]action.ActionType),
-		patchTimes:   make(map[string]string),
-		hasChanges:   false,
-		showingSave:  false,
+		results:          filteredResults,
+		summary:          summary,
+		leftDir:          leftDir,
+		rightDir:         rightDir,
+		cursor:           0,
+		showingDiff:      false,
+		currentDiff:      "",
+		windowWidth:      80,
+		windowHeight:     24,
+		viewportTop:      0,
+		fileActions:      make(map[string]action.ActionType),
+		patchTimes:       make(map[string]string),
+		hasChanges:       false,
+		showingSave:      false,
+		ignoreWhitespace: ignoreWhitespace,
 	}
 
 	// Initialize default actions (all ignore for safety)
@@ -91,35 +106,6 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 	}
 
 	return &App{model: model}
-}
-
-// sortResultsByDirectory sorts comparison results with directory-aware grouping
-// Files in the same directory will be grouped together, with directories sorted alphabetically
-func sortResultsByDirectory(results []compare.ComparisonResult) {
-	sort.Slice(results, func(i, j int) bool {
-		pathA := strings.Split(results[i].RelativePath, "/")
-		pathB := strings.Split(results[j].RelativePath, "/")
-
-		// Compare directory paths element by element
-		minLen := len(pathA) - 1 // Don't include filename in directory comparison
-		if len(pathB)-1 < minLen {
-			minLen = len(pathB) - 1
-		}
-
-		for k := 0; k < minLen; k++ {
-			if pathA[k] != pathB[k] {
-				return pathA[k] < pathB[k]
-			}
-		}
-
-		// If one path is a subdirectory of the other, shorter path (parent directory) comes first
-		if len(pathA) != len(pathB) {
-			return len(pathA) < len(pathB)
-		}
-
-		// Same directory depth, sort by filename
-		return pathA[len(pathA)-1] < pathB[len(pathB)-1]
-	})
 }
 
 // Run starts the TUI application
@@ -163,6 +149,10 @@ type Model struct {
 	tempLeftFile  string     // Path to temp left clone (if created)
 	tempRightFile string     // Path to temp right clone (if created)
 	appliedHunks  []bool     // Track which hunks have been applied (UI only)
+
+	// Diff options
+	ignoreWhitespace bool // Whether to ignore whitespace in diffs
+	diffViewportTop  int  // First visible line in diff viewport
 }
 
 // Init initializes the model (required by bubbletea)
@@ -184,6 +174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffLoadedMsg:
 		m.currentDiff = string(msg)
 		m.showingDiff = true
+		m.diffViewportTop = 0 // Reset scroll position for new diff
 		return m, nil
 
 	case diffErrorMsg:
@@ -216,6 +207,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showingDiff = false
 			m.currentDiff = ""
 			m.err = nil
+			m.diffViewportTop = 0 // Reset scroll position
 		} else {
 			// In file list, q quits the application
 			// Call profiling cleanup before quitting
@@ -234,6 +226,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showingDiff = false
 			m.currentDiff = ""
 			m.err = nil
+			m.diffViewportTop = 0 // Reset scroll position
 		} else if m.searchString != "" {
 			// Clear search in normal mode
 			m.searchString = ""
@@ -243,7 +236,12 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Note: ESC no longer quits app in normal mode - too dangerous
 
 	case "up", "k":
-		if !m.showingDiff && m.cursor > 0 {
+		if m.showingDiff {
+			// Scroll up in diff view
+			if m.diffViewportTop > 0 {
+				m.diffViewportTop--
+			}
+		} else if m.cursor > 0 {
 			m.cursor--
 			// Auto-scroll viewport if needed
 			if m.cursor < m.viewportTop {
@@ -252,7 +250,14 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "down", "j":
-		if !m.showingDiff && m.cursor < len(m.results)-1 {
+		if m.showingDiff {
+			// Scroll down in diff view
+			diffLines := strings.Split(m.currentDiff, "\n")
+			visibleDiffLines := m.getVisibleDiffLines()
+			if m.diffViewportTop+visibleDiffLines < len(diffLines) {
+				m.diffViewportTop++
+			}
+		} else if m.cursor < len(m.results)-1 {
 			m.cursor++
 			// Auto-scroll viewport if needed
 			visibleLines := m.getVisibleFileListLines()
@@ -271,7 +276,15 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "pgup", "page_up":
-		if !m.showingDiff && len(m.results) > 0 {
+		if m.showingDiff {
+			// Page up in diff view
+			visibleDiffLines := m.getVisibleDiffLines()
+			if m.diffViewportTop >= visibleDiffLines {
+				m.diffViewportTop -= visibleDiffLines
+			} else {
+				m.diffViewportTop = 0
+			}
+		} else if len(m.results) > 0 {
 			// Page up - jump by visible lines
 			visibleLines := m.getVisibleFileListLines()
 			if m.cursor >= visibleLines {
@@ -284,7 +297,20 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "pgdown", "page_down":
-		if !m.showingDiff && len(m.results) > 0 {
+		if m.showingDiff {
+			// Page down in diff view
+			diffLines := strings.Split(m.currentDiff, "\n")
+			visibleDiffLines := m.getVisibleDiffLines()
+			if m.diffViewportTop+visibleDiffLines*2 < len(diffLines) {
+				m.diffViewportTop += visibleDiffLines
+			} else {
+				// Go to last page
+				m.diffViewportTop = len(diffLines) - visibleDiffLines
+				if m.diffViewportTop < 0 {
+					m.diffViewportTop = 0
+				}
+			}
+		} else if len(m.results) > 0 {
 			// Page down - jump by visible lines
 			visibleLines := m.getVisibleFileListLines()
 			if m.cursor+visibleLines < len(m.results) {
@@ -414,12 +440,24 @@ func (m Model) loadDiff() tea.Cmd {
 
 			// Use Unix diff command with enhanced colorization and formatting
 			var cmd *exec.Cmd
+			args := []string{"--color=always", "-u", "-U3"}
+			if m.ignoreWhitespace {
+				args = append(args, "-w") // Ignore whitespace differences
+			}
+			args = append(args, leftPath, rightPath)
+
 			if _, err := exec.LookPath("colordiff"); err == nil {
 				// Use colordiff with color output and unified format with 3 lines of context
-				cmd = exec.Command("colordiff", "--color=always", "-u", "-U3", leftPath, rightPath)
+				cmd = exec.Command("colordiff", args...)
 			} else {
 				// Fall back to regular diff with unified format and 3 lines of context
-				cmd = exec.Command("diff", "-u", "-U3", leftPath, rightPath)
+				// Remove --color=always for regular diff
+				regularArgs := []string{"-u", "-U3"}
+				if m.ignoreWhitespace {
+					regularArgs = append(regularArgs, "-w")
+				}
+				regularArgs = append(regularArgs, leftPath, rightPath)
+				cmd = exec.Command("diff", regularArgs...)
 			}
 
 			output, err := cmd.Output()
@@ -434,24 +472,50 @@ func (m Model) loadDiff() tea.Cmd {
 			return diffLoadedMsg(output)
 		}
 
-		// For non-diff-able items, show basic info
-		info := fmt.Sprintf("File: %s\nStatus: %s\n\n", result.RelativePath, result.Status.String())
+		// For non-diff-able items, show file contents or basic info
+		var info string
+		var filePath string
 
 		switch result.Status {
 		case compare.StatusOnlyLeft:
-			if result.LeftInfo != nil {
-				info += fmt.Sprintf("Only exists in LEFT directory\nSize: %d bytes\n", result.LeftInfo.Size)
-				if !result.LeftInfo.IsDir {
-					info += fmt.Sprintf("Hash: %s\n", result.LeftInfo.Hash)
+			if result.LeftInfo != nil && !result.LeftInfo.IsDir {
+				// Show actual file contents for ONLY_LEFT files
+				filePath = filepath.Join(m.leftDir, result.RelativePath)
+				content, err := os.ReadFile(filePath)
+				if err != nil {
+					info = fmt.Sprintf("File: %s\nStatus: %s\n\nError reading file: %v", result.RelativePath, result.Status.String(), err)
+				} else {
+					info = fmt.Sprintf("File: %s\nStatus: Only in LEFT directory\nSize: %d bytes\n\n--- Content ---\n%s",
+						result.RelativePath, result.LeftInfo.Size, string(content))
+				}
+			} else {
+				// Directory or error case
+				info = fmt.Sprintf("File: %s\nStatus: %s\n\nOnly exists in LEFT directory", result.RelativePath, result.Status.String())
+				if result.LeftInfo != nil && result.LeftInfo.IsDir {
+					info += "\nType: Directory"
 				}
 			}
 		case compare.StatusOnlyRight:
-			if result.RightInfo != nil {
-				info += fmt.Sprintf("Only exists in RIGHT directory\nSize: %d bytes\n", result.RightInfo.Size)
-				if !result.RightInfo.IsDir {
-					info += fmt.Sprintf("Hash: %s\n", result.RightInfo.Hash)
+			if result.RightInfo != nil && !result.RightInfo.IsDir {
+				// Show actual file contents for ONLY_RIGHT files
+				filePath = filepath.Join(m.rightDir, result.RelativePath)
+				content, err := os.ReadFile(filePath)
+				if err != nil {
+					info = fmt.Sprintf("File: %s\nStatus: %s\n\nError reading file: %v", result.RelativePath, result.Status.String(), err)
+				} else {
+					info = fmt.Sprintf("File: %s\nStatus: Only in RIGHT directory\nSize: %d bytes\n\n--- Content ---\n%s",
+						result.RelativePath, result.RightInfo.Size, string(content))
+				}
+			} else {
+				// Directory or error case
+				info = fmt.Sprintf("File: %s\nStatus: %s\n\nOnly exists in RIGHT directory", result.RelativePath, result.Status.String())
+				if result.RightInfo != nil && result.RightInfo.IsDir {
+					info += "\nType: Directory"
 				}
 			}
+		default:
+			// Other statuses - show basic info
+			info = fmt.Sprintf("File: %s\nStatus: %s", result.RelativePath, result.Status.String())
 		}
 
 		return diffLoadedMsg([]byte(info))
@@ -627,11 +691,43 @@ func (m Model) viewDiff() string {
 			errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 			b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 		} else {
-			// Display diff content with hunk highlighting if in hunk mode
+			// Display diff content with scrolling support
+			diffContent := ""
 			if m.hunkMode && len(m.hunks) > 0 {
-				b.WriteString(m.renderDiffWithHunkHighlight())
+				diffContent = m.renderDiffWithHunkHighlight()
 			} else {
-				b.WriteString(m.currentDiff)
+				diffContent = m.currentDiff
+			}
+
+			// Apply scrolling to diff content
+			diffLines := strings.Split(diffContent, "\n")
+			visibleLines := m.getVisibleDiffLines()
+
+			// Calculate viewport boundaries
+			startLine := m.diffViewportTop
+			endLine := startLine + visibleLines
+			if endLine > len(diffLines) {
+				endLine = len(diffLines)
+			}
+			if startLine >= len(diffLines) {
+				startLine = len(diffLines) - 1
+				if startLine < 0 {
+					startLine = 0
+				}
+			}
+
+			// Show scrollable diff content
+			if len(diffLines) > 0 {
+				visibleDiff := strings.Join(diffLines[startLine:endLine], "\n")
+				b.WriteString(visibleDiff)
+
+				// Show scroll indicators if needed
+				if len(diffLines) > visibleLines {
+					b.WriteString("\n\n")
+					scrollInfo := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+					b.WriteString(scrollInfo.Render(fmt.Sprintf("Lines %d-%d of %d",
+						startLine+1, endLine, len(diffLines))))
+				}
 			}
 		}
 	}
@@ -646,11 +742,11 @@ func (m Model) viewDiff() string {
 				appliedCount++
 			}
 		}
-		b.WriteString(helpStyle.Render(fmt.Sprintf("n/p: next/prev hunk  >: apply left→right  <: apply right→left  ESC: exit hunk mode")))
+		b.WriteString(helpStyle.Render("n/p: next/prev hunk  >: apply left→right  <: apply right→left  ESC: exit hunk mode"))
 		b.WriteString("\n")
 		b.WriteString(helpStyle.Render(fmt.Sprintf("Applied: %d hunks", appliedCount)))
 	} else {
-		b.WriteString(helpStyle.Render("SPACE: enter hunk mode  Esc/q: back to file list  Ctrl+C: quit"))
+		b.WriteString(helpStyle.Render("↑/↓: scroll  PgUp/PgDn: page  SPACE: enter hunk mode  Esc/q: back to file list"))
 	}
 
 	return b.String()
@@ -1075,38 +1171,38 @@ func (m Model) exitHunkMode() (Model, tea.Cmd) {
 
 // applyCurrentHunk applies the currently selected hunk in the specified direction
 func (m Model) applyCurrentHunk(direction string) (Model, tea.Cmd) {
-	fmt.Fprintf(os.Stderr, "DEBUG: applyCurrentHunk called, direction=%s, hunkMode=%t, currentHunk=%d/%d\n",
+	util.DebugPrintf("applyCurrentHunk called, direction=%s, hunkMode=%t, currentHunk=%d/%d",
 		direction, m.hunkMode, m.currentHunk, len(m.hunks))
 
 	if !m.hunkMode || m.currentHunk >= len(m.hunks) {
-		fmt.Fprintf(os.Stderr, "DEBUG: Invalid state - returning\n")
+		util.DebugPrintf("Invalid state - returning")
 		return m, nil
 	}
 
 	if m.appliedHunks[m.currentHunk] {
-		fmt.Fprintf(os.Stderr, "DEBUG: Hunk already applied\n")
+		util.DebugPrintf("Hunk already applied")
 		m.saveMessage = fmt.Sprintf("Hunk %d already applied", m.currentHunk+1)
 		return m, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Creating temp files...\n")
+	util.DebugPrintf("Creating temp files...")
 	// Create temp files if not already created
 	if err := m.ensureTempFiles(); err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUG: Error creating temp files: %v\n", err)
+		util.DebugPrintf("Error creating temp files: %v", err)
 		m.saveMessage = fmt.Sprintf("Error creating temp files: %v", err)
 		return m, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Applying hunk to temp file...\n")
+	util.DebugPrintf("Applying hunk to temp file...")
 	// Apply the hunk
 	hunk := m.hunks[m.currentHunk]
 	if err := m.applyHunkToTempFile(hunk, direction); err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUG: Error applying hunk: %v\n", err)
+		util.DebugPrintf("Error applying hunk: %v", err)
 		m.saveMessage = fmt.Sprintf("Error applying hunk: %v", err)
 		return m, nil
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Marking hunk as applied...\n")
+	util.DebugPrintf("Marking hunk as applied...")
 	// Mark hunk as applied
 	m.appliedHunks[m.currentHunk] = true
 	appliedCount := 0
@@ -1117,7 +1213,7 @@ func (m Model) applyCurrentHunk(direction string) (Model, tea.Cmd) {
 	}
 
 	m.saveMessage = fmt.Sprintf("Applied hunk %d/%d (%s)", m.currentHunk+1, len(m.hunks), direction)
-	fmt.Fprintf(os.Stderr, "DEBUG: Hunk applied successfully, regenerating diff...\n")
+	util.DebugPrintf("Hunk applied successfully, regenerating diff...")
 
 	// Regenerate diff with updated temp files
 	return m, m.loadDiff()
@@ -1280,10 +1376,23 @@ func (m *Model) regenerateDiff() (Model, tea.Cmd) {
 
 	// Run diff command
 	var cmd *exec.Cmd
+	args := []string{"--color=always", "-u", "-U3"}
+	if m.ignoreWhitespace {
+		args = append(args, "-w") // Ignore whitespace differences
+	}
+	args = append(args, leftPath, rightPath)
+
 	if _, err := exec.LookPath("colordiff"); err == nil {
-		cmd = exec.Command("colordiff", "--color=always", "-u", "-U3", leftPath, rightPath)
+		cmd = exec.Command("colordiff", args...)
 	} else {
-		cmd = exec.Command("diff", "-u", "-U3", leftPath, rightPath)
+		// Fall back to regular diff with unified format and 3 lines of context
+		// Remove --color=always for regular diff
+		regularArgs := []string{"-u", "-U3"}
+		if m.ignoreWhitespace {
+			regularArgs = append(regularArgs, "-w")
+		}
+		regularArgs = append(regularArgs, leftPath, rightPath)
+		cmd = exec.Command("diff", regularArgs...)
 	}
 
 	output, err := cmd.Output()
@@ -1337,7 +1446,7 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 	// Determine which side was modified and generate appropriate patch
 	if m.tempLeftFile != "" {
 		// Left side was modified
-		fmt.Fprintf(os.Stderr, "DEBUG: Generating patch for left side: %s vs %s\n", originalLeft, m.tempLeftFile)
+		util.DebugPrintf("Generating patch for left side: %s vs %s", originalLeft, m.tempLeftFile)
 		cmd := exec.Command("diff", "-u", originalLeft, m.tempLeftFile)
 		output, err := cmd.Output()
 		if err != nil {
@@ -1345,17 +1454,17 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 				// Exit code 1 means differences found - this is what we want!
 				patchContent = string(output)
 				patchSide = "left"
-				fmt.Fprintf(os.Stderr, "DEBUG: Left patch generated, %d bytes\n", len(patchContent))
+				util.DebugPrintf("Left patch generated, %d bytes", len(patchContent))
 			} else {
-				fmt.Fprintf(os.Stderr, "DEBUG: Diff error: %v\n", err)
+				util.DebugPrintf("Diff error: %v", err)
 			}
 		} else {
 			// No differences found
-			fmt.Fprintf(os.Stderr, "DEBUG: No differences in left side\n")
+			util.DebugPrintf("No differences in left side")
 		}
 	} else if m.tempRightFile != "" {
 		// Right side was modified
-		fmt.Fprintf(os.Stderr, "DEBUG: Generating patch for right side: %s vs %s\n", originalRight, m.tempRightFile)
+		util.DebugPrintf("Generating patch for right side: %s vs %s", originalRight, m.tempRightFile)
 		cmd := exec.Command("diff", "-u", originalRight, m.tempRightFile)
 		output, err := cmd.Output()
 		if err != nil {
@@ -1363,13 +1472,13 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 				// Exit code 1 means differences found - this is what we want!
 				patchContent = string(output)
 				patchSide = "right"
-				fmt.Fprintf(os.Stderr, "DEBUG: Right patch generated, %d bytes\n", len(patchContent))
+				util.DebugPrintf("Right patch generated, %d bytes", len(patchContent))
 			} else {
-				fmt.Fprintf(os.Stderr, "DEBUG: Diff error: %v\n", err)
+				util.DebugPrintf("Diff error: %v", err)
 			}
 		} else {
 			// No differences found
-			fmt.Fprintf(os.Stderr, "DEBUG: No differences in right side\n")
+			util.DebugPrintf("No differences in right side")
 		}
 	}
 
@@ -1404,7 +1513,7 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 	m.saveMessage = fmt.Sprintf("Patch saved: %s (timestamp: %s)", patchPath, timestamp)
 
 	// Store timestamp for display purposes
-	fmt.Fprintf(os.Stderr, "DEBUG: Generated patch with timestamp %s\n", timestamp)
+	util.DebugPrintf("Generated patch with timestamp %s", timestamp)
 
 	// Clean up temp files
 	m.cleanupTempFiles()

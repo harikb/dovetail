@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/harikb/dovetail/internal/util"
 )
 
 // GitignoreParser handles parsing .gitignore files with feature validation
@@ -45,7 +47,7 @@ func (p *GitignoreParser) ParseGitignoreFiles(leftDir, rightDir string, checkBot
 		}
 		result.Sources = append(result.Sources, leftGitignore)
 		if p.verboseLevel >= 2 {
-			fmt.Fprintf(os.Stderr, "Parsed .gitignore: %s\n", leftGitignore)
+			util.LogInfo("Parsed .gitignore: %s", leftGitignore)
 		}
 	}
 
@@ -59,14 +61,14 @@ func (p *GitignoreParser) ParseGitignoreFiles(leftDir, rightDir string, checkBot
 				}
 				result.Sources = append(result.Sources, rightGitignore)
 				if p.verboseLevel >= 2 {
-					fmt.Fprintf(os.Stderr, "Parsed .gitignore: %s\n", rightGitignore)
+					util.LogInfo("Parsed .gitignore: %s", rightGitignore)
 				}
 			}
 		}
 	}
 
 	if p.verboseLevel >= 1 && len(result.Sources) > 0 {
-		fmt.Fprintf(os.Stderr, "Applied .gitignore patterns from: %s\n", strings.Join(result.Sources, ", "))
+		util.LogInfo("Applied .gitignore patterns from: %s", strings.Join(result.Sources, ", "))
 		if p.verboseLevel >= 2 {
 			p.logParsedPatterns(result)
 		}
@@ -197,20 +199,20 @@ func (p *GitignoreParser) parsePattern(pattern string, result *GitignoreResult) 
 	result.Names = append(result.Names, pattern)
 
 	if p.verboseLevel >= 3 {
-		fmt.Fprintf(os.Stderr, "Gitignore pattern: '%s' -> dovetail exclusion\n", original)
+		util.DebugPrintf("Gitignore pattern: '%s' -> dovetail exclusion", original)
 	}
 }
 
 // logParsedPatterns logs the patterns that were parsed (for debugging)
 func (p *GitignoreParser) logParsedPatterns(result *GitignoreResult) {
 	if len(result.Names) > 0 {
-		fmt.Fprintf(os.Stderr, "  Names: %s\n", strings.Join(result.Names, ", "))
+		util.DebugPrintf("  Names: %s", strings.Join(result.Names, ", "))
 	}
 	if len(result.Paths) > 0 {
-		fmt.Fprintf(os.Stderr, "  Paths: %s\n", strings.Join(result.Paths, ", "))
+		util.DebugPrintf("  Paths: %s", strings.Join(result.Paths, ", "))
 	}
 	if len(result.Extensions) > 0 {
-		fmt.Fprintf(os.Stderr, "  Extensions: %s\n", strings.Join(result.Extensions, ", "))
+		util.DebugPrintf("  Extensions: %s", strings.Join(result.Extensions, ", "))
 	}
 }
 

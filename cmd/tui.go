@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -10,6 +9,7 @@ import (
 	"github.com/harikb/dovetail/internal/compare"
 	"github.com/harikb/dovetail/internal/config"
 	"github.com/harikb/dovetail/internal/tui"
+	"github.com/harikb/dovetail/internal/util"
 )
 
 // tuiCmd represents the tui command
@@ -31,6 +31,7 @@ var (
 	tuiExcludePaths      []string
 	tuiExcludeExtensions []string
 	tuiUseGitignore      bool
+	tuiIgnoreWhitespace  bool
 )
 
 func init() {
@@ -41,6 +42,7 @@ func init() {
 	tuiCmd.Flags().StringSliceVar(&tuiExcludePaths, "exclude-path", []string{}, "exclude files/directories by relative path")
 	tuiCmd.Flags().StringSliceVar(&tuiExcludeExtensions, "exclude-ext", []string{}, "exclude files by extension (without dot)")
 	tuiCmd.Flags().BoolVar(&tuiUseGitignore, "use-gitignore", false, "read and apply .gitignore rules from both directories")
+	tuiCmd.Flags().BoolVar(&tuiIgnoreWhitespace, "ignore-whitespace", false, "ignore whitespace differences in diffs")
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
@@ -112,7 +114,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	engine.SetVerboseLevel(cfg.General.Verbose)
 
 	// Show loading message
-	fmt.Fprintf(os.Stderr, "Scanning directories...\n")
+	util.LogProgress("Scanning directories...")
 
 	// Perform comparison
 	results, summary, err := engine.Compare(leftDir, rightDir)
@@ -121,7 +123,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Launch TUI with profiling cleanup
-	tuiApp := tui.NewApp(results, summary, leftDir, rightDir)
+	tuiApp := tui.NewApp(results, summary, leftDir, rightDir, tuiIgnoreWhitespace)
 	tui.SetProfilingCleanup(GetCleanupProfiling())
 	return tuiApp.Run()
 }

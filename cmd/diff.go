@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -180,10 +181,10 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	if showDiff {
 		// Display checksum-based diffs for all modified files
-		return showAllDifferences(results, leftDir, rightDir, cfg.General.NoColor)
+		return showAllDifferences(results, leftDir, rightDir, cfg.General.NoColor, ignoreWhitespace)
 	} else if showDiffFile != "" {
 		// Display diff for single specific file
-		return showSingleFileDiff(results, leftDir, rightDir, showDiffFile, cfg.General.NoColor)
+		return showSingleFileDiff(results, leftDir, rightDir, showDiffFile, cfg.General.NoColor, ignoreWhitespace)
 	} else {
 		// Generate action file
 		outputFile, err := filepath.Abs(outputFile)
@@ -226,7 +227,7 @@ func validateDirectory(path string) error {
 }
 
 // showAllDifferences displays checksum-based differences for all modified files
-func showAllDifferences(results []compare.ComparisonResult, leftDir, rightDir string, noColor bool) error {
+func showAllDifferences(results []compare.ComparisonResult, leftDir, rightDir string, noColor bool, ignoreWhitespace bool) error {
 	if noColor {
 		fmt.Printf("Comparison Results:\n")
 		fmt.Printf("==================\n")
@@ -252,19 +253,26 @@ func showAllDifferences(results []compare.ComparisonResult, leftDir, rightDir st
 
 	fmt.Printf("Modified files (%d):\n\n", modifiedCount)
 
+	// Create a slice of modified results and sort them alphabetically
+	var modifiedResults []compare.ComparisonResult
 	for _, result := range results {
-		if result.Status != compare.StatusModified {
-			continue
+		if result.Status == compare.StatusModified {
+			modifiedResults = append(modifiedResults, result)
 		}
+	}
+	sort.Slice(modifiedResults, func(i, j int) bool {
+		return modifiedResults[i].RelativePath < modifiedResults[j].RelativePath
+	})
 
-		showFileStatus(result, leftDir, rightDir, noColor)
+	for _, result := range modifiedResults {
+		showFileStatus(result, leftDir, rightDir, noColor, ignoreWhitespace)
 	}
 
 	return nil
 }
 
 // showSingleFileDiff displays diff for a single specific file
-func showSingleFileDiff(results []compare.ComparisonResult, leftDir, rightDir, targetFile string, noColor bool) error {
+func showSingleFileDiff(results []compare.ComparisonResult, leftDir, rightDir, targetFile string, noColor bool, ignoreWhitespace bool) error {
 	// Find the specific file in results
 	var targetResult *compare.ComparisonResult
 	for _, result := range results {
@@ -291,12 +299,12 @@ func showSingleFileDiff(results []compare.ComparisonResult, leftDir, rightDir, t
 		fmt.Printf("\033[1;36m================\033[0m\n")
 	}
 
-	showFileStatus(*targetResult, leftDir, rightDir, noColor)
+	showFileStatus(*targetResult, leftDir, rightDir, noColor, ignoreWhitespace)
 	return nil
 }
 
 // showFileStatus displays the status of a single file with checksum information
-func showFileStatus(result compare.ComparisonResult, leftDir, rightDir string, noColor bool) {
+func showFileStatus(result compare.ComparisonResult, leftDir, rightDir string, noColor bool, ignoreWhitespace bool) {
 	if noColor {
 		fmt.Printf("=== %s ===\n", result.RelativePath)
 	} else {
@@ -334,7 +342,7 @@ func showFileStatus(result compare.ComparisonResult, leftDir, rightDir string, n
 				fmt.Printf("\nDifferences:\n")
 
 				// Use Unix diff to show actual content differences
-				if err := showUnixDiff(leftPath, rightPath, result.RelativePath, noColor); err != nil {
+				if err := showUnixDiff(leftPath, rightPath, result.RelativePath, noColor, ignoreWhitespace); err != nil {
 					fmt.Printf("Error generating diff: %v\n", err)
 				}
 			}
@@ -381,7 +389,7 @@ func formatBytes(bytes int64) string {
 }
 
 // showUnixDiff uses the Unix diff command to show actual line-by-line differences
-func showUnixDiff(leftPath, rightPath, relativePath string, noColor bool) error {
+func showUnixDiff(leftPath, rightPath, relativePath string, noColor bool, ignoreWhitespace bool) error {
 	// Check if diff command exists
 	if _, err := exec.LookPath("diff"); err != nil {
 		fmt.Printf("Unix 'diff' command not available: %v\n", err)
@@ -390,15 +398,21 @@ func showUnixDiff(leftPath, rightPath, relativePath string, noColor bool) error 
 
 	// Prepare diff command with unified format
 	var cmd *exec.Cmd
+	args := []string{"-u"}
+	if ignoreWhitespace {
+		args = append(args, "-w") // Ignore whitespace differences
+	}
+	args = append(args, leftPath, rightPath)
+
 	if noColor {
 		// Standard unified diff
-		cmd = exec.Command("diff", "-u", leftPath, rightPath)
+		cmd = exec.Command("diff", args...)
 	} else {
 		// Try to use colordiff if available, fallback to regular diff
 		if _, err := exec.LookPath("colordiff"); err == nil {
-			cmd = exec.Command("colordiff", "-u", leftPath, rightPath)
+			cmd = exec.Command("colordiff", args...)
 		} else {
-			cmd = exec.Command("diff", "-u", leftPath, rightPath)
+			cmd = exec.Command("diff", args...)
 		}
 	}
 

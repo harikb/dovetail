@@ -8,6 +8,7 @@ import (
 	"runtime/pprof"
 	"syscall"
 
+	"github.com/harikb/dovetail/internal/util"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -15,6 +16,7 @@ import (
 var (
 	cfgFile      string
 	verboseLevel int
+	debugFlag    bool
 	cpuProfile   string
 	memProfile   string
 )
@@ -37,14 +39,21 @@ The tool follows a three-stage workflow:
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
+	// Initialize logger if verbose or debug is enabled
+	if err := util.InitLogger(GetVerboseLevel(), debugFlag); err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing logger: %v\n", err)
+		return err
+	}
+	defer util.CleanupLogger()
+
 	// Setup profiling if requested
 	if err := setupProfiling(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error setting up profiling: %v\n", err)
+		util.LogError("Error setting up profiling: %v", err)
 		return err
 	}
 	defer cleanupProfiling()
 
-	// Setup signal handling for graceful profiling cleanup
+	// Setup signal handling for graceful profiling and logger cleanup
 	setupSignalHandling()
 
 	return rootCmd.Execute()
@@ -56,6 +65,7 @@ func init() {
 	// Here you will define your flags and configuration settings.
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dovetail.yaml)")
 	rootCmd.PersistentFlags().CountVarP(&verboseLevel, "verbose", "v", "verbose output (-v basic, -vv detailed, -vvv debug)")
+	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "enable debug logging to debug.log")
 	rootCmd.PersistentFlags().Bool("no-color", false, "disable colored output")
 
 	// Profiling flags
@@ -88,7 +98,7 @@ func initConfig() {
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
 		if GetVerboseLevel() > 0 {
-			fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+			util.LogInfo("Using config file: %s", viper.ConfigFileUsed())
 		}
 	}
 }
@@ -129,7 +139,7 @@ func setupProfiling() error {
 			cpuFile.Close()
 			return fmt.Errorf("could not start CPU profile: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "CPU profiling enabled, writing to %s\n", cpuProfile)
+		util.LogInfo("CPU profiling enabled, writing to %s", cpuProfile)
 	}
 
 	return nil
@@ -140,23 +150,23 @@ func cleanupProfiling() {
 	if cpuProfile != "" && cpuFile != nil {
 		pprof.StopCPUProfile()
 		cpuFile.Close()
-		fmt.Fprintf(os.Stderr, "CPU profile written to %s\n", cpuProfile)
+		util.LogInfo("CPU profile written to %s", cpuProfile)
 	}
 
 	if memProfile != "" {
 		f, err := os.Create(memProfile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "could not create memory profile file %s: %v\n", memProfile, err)
+			util.LogError("could not create memory profile file %s: %v", memProfile, err)
 			return
 		}
 		defer f.Close()
 
 		runtime.GC() // get up-to-date statistics
 		if err := pprof.WriteHeapProfile(f); err != nil {
-			fmt.Fprintf(os.Stderr, "could not write memory profile: %v\n", err)
+			util.LogError("could not write memory profile: %v", err)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "Memory profile written to %s\n", memProfile)
+		util.LogInfo("Memory profile written to %s", memProfile)
 	}
 }
 
@@ -167,8 +177,9 @@ func setupSignalHandling() {
 
 	go func() {
 		<-c
-		fmt.Fprintf(os.Stderr, "\nReceived interrupt signal, cleaning up profiling...\n")
+		util.LogInfo("Received interrupt signal, cleaning up...")
 		cleanupProfiling()
+		util.CleanupLogger()
 		os.Exit(1)
 	}()
 }

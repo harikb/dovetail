@@ -8,10 +8,19 @@ import (
 // VerboseCallback is a callback function for progress updates
 type VerboseCallback func(level int, format string, args ...interface{})
 
-// DefaultVerboseCallback is the default implementation that prints to stderr
+// DefaultVerboseCallback is the default implementation that uses the logger
 func DefaultVerboseCallback(level int, format string, args ...interface{}) {
-	// Print to stderr so it doesn't interfere with output redirection
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	// Use logger if enabled, otherwise fall back to stderr for high-priority messages
+	if IsLogEnabled() {
+		if level >= 3 {
+			DebugPrintf(format, args...)
+		} else {
+			LogProgress(format, args...)
+		}
+	} else if level <= 2 {
+		// For non-logged verbose output, only show level 1-2 to avoid spam
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
 }
 
 // VerbosePrintf prints a message at the specified verbosity level
