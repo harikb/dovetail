@@ -4,7 +4,8 @@
 - NEVER use exclamation marks (!) in echo statements or terminal commands
 - Exclamation marks trigger shell history expansion and cause command failures
 - Use periods, dashes, or other punctuation instead
-- Example: Use "Phase 2 Complete" instead of "Phase 2 Complete!"
+- Example: Use "Phase 2 Complete." instead of "Phase 2 Complete!"
+- CRITICAL: Always end sentences with periods, not exclamation marks in echo commands
 
 ## Code Style
 - Use meaningful variable names

@@ -111,6 +111,11 @@ var (
 	cpuFile *os.File
 )
 
+// GetCleanupProfiling returns the cleanup function for external use
+func GetCleanupProfiling() func() {
+	return cleanupProfiling
+}
+
 // setupProfiling initializes CPU and memory profiling if requested
 func setupProfiling() error {
 	if cpuProfile != "" {

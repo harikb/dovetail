@@ -120,7 +120,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("comparison failed: %w", err)
 	}
 
-	// Launch TUI
+	// Launch TUI with profiling cleanup
 	tuiApp := tui.NewApp(results, summary, leftDir, rightDir)
+	tui.SetProfilingCleanup(GetCleanupProfiling())
 	return tuiApp.Run()
 }

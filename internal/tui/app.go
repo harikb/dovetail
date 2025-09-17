@@ -19,6 +19,15 @@ import (
 	"github.com/harikb/dovetail/internal/compare"
 )
 
+// getProfilingCleanup provides access to profiling cleanup function
+// This is a weak dependency to avoid import cycles
+var getProfilingCleanup = func() func() { return nil }
+
+// SetProfilingCleanup allows external packages to set the cleanup function
+func SetProfilingCleanup(cleanup func()) {
+	getProfilingCleanup = func() func() { return cleanup }
+}
+
 // DiffHunk represents a parsed hunk from unified diff
 type DiffHunk struct {
 	Header     string   // "@@ -10,3 +10,4 @@"
@@ -182,6 +191,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
+		// Call profiling cleanup before quitting
+		if cleanup := getProfilingCleanup(); cleanup != nil {
+			cleanup()
+		}
 		return m, tea.Quit
 
 	case "q":
@@ -192,6 +205,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 		} else {
 			// In file list, q quits the application
+			// Call profiling cleanup before quitting
+			if cleanup := getProfilingCleanup(); cleanup != nil {
+				cleanup()
+			}
 			return m, tea.Quit
 		}
 
@@ -808,6 +825,10 @@ func getActionColor(act action.ActionType) lipgloss.Color {
 func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
+		// Call profiling cleanup before quitting
+		if cleanup := getProfilingCleanup(); cleanup != nil {
+			cleanup()
+		}
 		return m, tea.Quit
 	case "esc":
 		// Cancel search
