@@ -59,6 +59,7 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 		windowWidth:  80,
 		windowHeight: 24,
 		fileActions:  make(map[string]action.ActionType),
+		patchTimes:   make(map[string]string),
 		hasChanges:   false,
 		showingSave:  false,
 	}
@@ -122,6 +123,7 @@ type Model struct {
 
 	// Interactive action tracking
 	fileActions map[string]action.ActionType // Track action per file path
+	patchTimes  map[string]string            // Track patch timestamps for display
 	hasChanges  bool                         // Whether any actions were modified
 	showingSave bool                         // Whether save confirmation is shown
 	saveMessage string                       // Save result message
@@ -330,8 +332,16 @@ func (m Model) loadDiff() tea.Cmd {
 			result.LeftInfo != nil && !result.LeftInfo.IsDir &&
 			result.RightInfo != nil && !result.RightInfo.IsDir {
 
+			// Use temp files if they exist (for hunk mode), otherwise use originals
 			leftPath := fmt.Sprintf("%s/%s", m.leftDir, result.RelativePath)
+			if m.tempLeftFile != "" {
+				leftPath = m.tempLeftFile
+			}
+
 			rightPath := fmt.Sprintf("%s/%s", m.rightDir, result.RelativePath)
+			if m.tempRightFile != "" {
+				rightPath = m.tempRightFile
+			}
 
 			// Use Unix diff command with enhanced colorization and formatting
 			var cmd *exec.Cmd
@@ -434,15 +444,25 @@ func (m Model) viewFileList() string {
 				filePath = highlightSearch(result.RelativePath, m.searchString)
 			}
 
+			// Get action display string
+			actionStr := currentAction.String()
+			if currentAction == action.ActionType(999) { // Patch marker
+				if timestamp, hasTime := m.patchTimes[result.RelativePath]; hasTime {
+					actionStr = "p=" + timestamp[len(timestamp)-6:] // Last 6 digits
+				} else {
+					actionStr = "p"
+				}
+			}
+
 			var line string
 			if i == m.cursor {
 				// Highlight selected line
 				selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15"))
 				line = selectedStyle.Render(fmt.Sprintf("▶ [%s] %-12s %s",
-					currentAction.String(), result.Status.String(), filePath))
+					actionStr, result.Status.String(), filePath))
 			} else {
 				// Color the action and status separately
-				actionPart := actionStyle.Render(fmt.Sprintf("  [%s]", currentAction.String()))
+				actionPart := actionStyle.Render(fmt.Sprintf("  [%s]", actionStr))
 				statusPart := statusStyle.Render(fmt.Sprintf(" %-12s", result.Status.String()))
 				line = actionPart + statusPart + " " + filePath
 			}
@@ -497,6 +517,11 @@ func (m Model) viewFileList() string {
 // viewDiff renders the diff view
 func (m Model) viewDiff() string {
 	var b strings.Builder
+
+	// Clear screen to prevent corruption
+	b.WriteString(strings.Repeat(" ", m.windowWidth))
+	b.WriteString("\n")
+	b.WriteString("\033[H") // Move cursor to top
 
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
@@ -772,6 +797,8 @@ func getActionColor(act action.ActionType) lipgloss.Color {
 		return lipgloss.Color("13") // Magenta
 	case action.ActionDeleteLeft, action.ActionDeleteRight, action.ActionDeleteBoth:
 		return lipgloss.Color("9") // Red
+	case action.ActionType(999): // Patch marker
+		return lipgloss.Color("11") // Yellow for patches
 	default:
 		return lipgloss.Color("15") // White
 	}
@@ -958,28 +985,38 @@ func (m Model) exitHunkMode() (Model, tea.Cmd) {
 
 // applyCurrentHunk applies the currently selected hunk in the specified direction
 func (m Model) applyCurrentHunk(direction string) (Model, tea.Cmd) {
+	fmt.Fprintf(os.Stderr, "DEBUG: applyCurrentHunk called, direction=%s, hunkMode=%t, currentHunk=%d/%d\n",
+		direction, m.hunkMode, m.currentHunk, len(m.hunks))
+
 	if !m.hunkMode || m.currentHunk >= len(m.hunks) {
+		fmt.Fprintf(os.Stderr, "DEBUG: Invalid state - returning\n")
 		return m, nil
 	}
 
 	if m.appliedHunks[m.currentHunk] {
+		fmt.Fprintf(os.Stderr, "DEBUG: Hunk already applied\n")
 		m.saveMessage = fmt.Sprintf("Hunk %d already applied", m.currentHunk+1)
 		return m, nil
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Creating temp files...\n")
 	// Create temp files if not already created
 	if err := m.ensureTempFiles(); err != nil {
+		fmt.Fprintf(os.Stderr, "DEBUG: Error creating temp files: %v\n", err)
 		m.saveMessage = fmt.Sprintf("Error creating temp files: %v", err)
 		return m, nil
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Applying hunk to temp file...\n")
 	// Apply the hunk
 	hunk := m.hunks[m.currentHunk]
 	if err := m.applyHunkToTempFile(hunk, direction); err != nil {
+		fmt.Fprintf(os.Stderr, "DEBUG: Error applying hunk: %v\n", err)
 		m.saveMessage = fmt.Sprintf("Error applying hunk: %v", err)
 		return m, nil
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Marking hunk as applied...\n")
 	// Mark hunk as applied
 	m.appliedHunks[m.currentHunk] = true
 	appliedCount := 0
@@ -990,14 +1027,24 @@ func (m Model) applyCurrentHunk(direction string) (Model, tea.Cmd) {
 	}
 
 	m.saveMessage = fmt.Sprintf("Applied hunk %d/%d (%s)", m.currentHunk+1, len(m.hunks), direction)
+	fmt.Fprintf(os.Stderr, "DEBUG: Hunk applied successfully, regenerating diff...\n")
 
 	// Regenerate diff with updated temp files
 	return m, m.loadDiff()
 }
 
+// stripAnsiCodes removes ANSI escape sequences from a string
+func stripAnsiCodes(s string) string {
+	// Remove all ANSI escape sequences (more comprehensive than just SGR codes)
+	ansiRegex := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	return ansiRegex.ReplaceAllString(s, "")
+}
+
 // parseDiffIntoHunks parses unified diff content into individual hunks
 func parseDiffIntoHunks(diffContent string) ([]DiffHunk, error) {
-	lines := strings.Split(diffContent, "\n")
+	// Strip ANSI color codes that break parsing
+	cleanDiff := stripAnsiCodes(diffContent)
+	lines := strings.Split(cleanDiff, "\n")
 	var hunks []DiffHunk
 	var currentHunk *DiffHunk
 
@@ -1200,21 +1247,39 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 	// Determine which side was modified and generate appropriate patch
 	if m.tempLeftFile != "" {
 		// Left side was modified
+		fmt.Fprintf(os.Stderr, "DEBUG: Generating patch for left side: %s vs %s\n", originalLeft, m.tempLeftFile)
 		cmd := exec.Command("diff", "-u", originalLeft, m.tempLeftFile)
-		if output, err := cmd.Output(); err != nil {
+		output, err := cmd.Output()
+		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				// Exit code 1 means differences found - this is what we want!
 				patchContent = string(output)
 				patchSide = "left"
+				fmt.Fprintf(os.Stderr, "DEBUG: Left patch generated, %d bytes\n", len(patchContent))
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: Diff error: %v\n", err)
 			}
+		} else {
+			// No differences found
+			fmt.Fprintf(os.Stderr, "DEBUG: No differences in left side\n")
 		}
 	} else if m.tempRightFile != "" {
 		// Right side was modified
+		fmt.Fprintf(os.Stderr, "DEBUG: Generating patch for right side: %s vs %s\n", originalRight, m.tempRightFile)
 		cmd := exec.Command("diff", "-u", originalRight, m.tempRightFile)
-		if output, err := cmd.Output(); err != nil {
+		output, err := cmd.Output()
+		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				// Exit code 1 means differences found - this is what we want!
 				patchContent = string(output)
 				patchSide = "right"
+				fmt.Fprintf(os.Stderr, "DEBUG: Right patch generated, %d bytes\n", len(patchContent))
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: Diff error: %v\n", err)
 			}
+		} else {
+			// No differences found
+			fmt.Fprintf(os.Stderr, "DEBUG: No differences in right side\n")
 		}
 	}
 
@@ -1242,9 +1307,14 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 	}
 
 	// Update action to patch type
-	m.fileActions[result.RelativePath] = action.ActionType(999) // Temporary - need to add patch action type
+	// Use a special marker value and store timestamp separately
+	m.fileActions[result.RelativePath] = action.ActionType(999) // Patch marker
+	m.patchTimes[result.RelativePath] = timestamp
 	m.hasChanges = true
-	m.saveMessage = fmt.Sprintf("Patch saved: %s", patchPath)
+	m.saveMessage = fmt.Sprintf("Patch saved: %s (timestamp: %s)", patchPath, timestamp)
+
+	// Store timestamp for display purposes
+	fmt.Fprintf(os.Stderr, "DEBUG: Generated patch with timestamp %s\n", timestamp)
 
 	// Clean up temp files
 	m.cleanupTempFiles()

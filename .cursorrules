@@ -9,8 +9,11 @@
 ## Code Style
 - Use meaningful variable names
 - Add comments for complex logic
-- Prefer explicit error handling over silent failures
+- Error Handling: Follow a "fail fast" principle.
+  - Handle errors explicitly; do not hide them or let them fail silently.
+  - Ensure tracebacks are always shown.
 
+Do not use try/catch or recover (in Go) to suppress errors or to log-and-ignore.
 ## Testing
 - Always test TUI changes with actual file comparisons
 - Verify both keyboard navigation and visual output

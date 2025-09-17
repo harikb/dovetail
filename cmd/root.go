@@ -3,6 +3,10 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"runtime"
+	"runtime/pprof"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -11,6 +15,8 @@ import (
 var (
 	cfgFile      string
 	verboseLevel int
+	cpuProfile   string
+	memProfile   string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -31,6 +37,16 @@ The tool follows a three-stage workflow:
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
+	// Setup profiling if requested
+	if err := setupProfiling(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error setting up profiling: %v\n", err)
+		return err
+	}
+	defer cleanupProfiling()
+
+	// Setup signal handling for graceful profiling cleanup
+	setupSignalHandling()
+
 	return rootCmd.Execute()
 }
 
@@ -41,6 +57,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.dovetail.yaml)")
 	rootCmd.PersistentFlags().CountVarP(&verboseLevel, "verbose", "v", "verbose output (-v basic, -vv detailed, -vvv debug)")
 	rootCmd.PersistentFlags().Bool("no-color", false, "disable colored output")
+
+	// Profiling flags
+	rootCmd.PersistentFlags().StringVar(&cpuProfile, "cpuprofile", "", "write CPU profile to file")
+	rootCmd.PersistentFlags().StringVar(&memProfile, "memprofile", "", "write memory profile to file")
 
 	// Bind flags to viper
 	viper.BindPFlag("verbose-level", rootCmd.PersistentFlags().Lookup("verbose"))
@@ -85,4 +105,65 @@ func GetVerboseLevel() int {
 	}
 	// Fall back to viper (for config file support)
 	return viper.GetInt("verbose-level")
+}
+
+var (
+	cpuFile *os.File
+)
+
+// setupProfiling initializes CPU and memory profiling if requested
+func setupProfiling() error {
+	if cpuProfile != "" {
+		var err error
+		cpuFile, err = os.Create(cpuProfile)
+		if err != nil {
+			return fmt.Errorf("could not create CPU profile file %s: %w", cpuProfile, err)
+		}
+
+		if err := pprof.StartCPUProfile(cpuFile); err != nil {
+			cpuFile.Close()
+			return fmt.Errorf("could not start CPU profile: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "CPU profiling enabled, writing to %s\n", cpuProfile)
+	}
+
+	return nil
+}
+
+// cleanupProfiling stops profiling and writes memory profile if requested
+func cleanupProfiling() {
+	if cpuProfile != "" && cpuFile != nil {
+		pprof.StopCPUProfile()
+		cpuFile.Close()
+		fmt.Fprintf(os.Stderr, "CPU profile written to %s\n", cpuProfile)
+	}
+
+	if memProfile != "" {
+		f, err := os.Create(memProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not create memory profile file %s: %v\n", memProfile, err)
+			return
+		}
+		defer f.Close()
+
+		runtime.GC() // get up-to-date statistics
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			fmt.Fprintf(os.Stderr, "could not write memory profile: %v\n", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Memory profile written to %s\n", memProfile)
+	}
+}
+
+// setupSignalHandling ensures profiling data is saved on interrupt
+func setupSignalHandling() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-c
+		fmt.Fprintf(os.Stderr, "\nReceived interrupt signal, cleaning up profiling...\n")
+		cleanupProfiling()
+		os.Exit(1)
+	}()
 }
