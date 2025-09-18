@@ -34,25 +34,29 @@ The tool follows a three-stage workflow:
 2. Review - Manually edit the action file to specify desired actions  
 3. Apply - Execute the actions in dry-run or real mode`,
 	Version: "1.0.0",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Initialize logger after flags are parsed
+		if err := util.InitLogger(GetVerboseLevel(), debugFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error initializing logger: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Setup profiling if requested
+		if err := setupProfiling(); err != nil {
+			util.LogError("Error setting up profiling: %v", err)
+			os.Exit(1)
+		}
+	},
+	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		// Cleanup logger and profiling
+		cleanupProfiling()
+		util.CleanupLogger()
+	},
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
-	// Initialize logger if verbose or debug is enabled
-	if err := util.InitLogger(GetVerboseLevel(), debugFlag); err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing logger: %v\n", err)
-		return err
-	}
-	defer util.CleanupLogger()
-
-	// Setup profiling if requested
-	if err := setupProfiling(); err != nil {
-		util.LogError("Error setting up profiling: %v", err)
-		return err
-	}
-	defer cleanupProfiling()
-
 	// Setup signal handling for graceful profiling and logger cleanup
 	setupSignalHandling()
 
