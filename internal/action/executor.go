@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/harikb/dovetail/internal/util"
 )
@@ -61,6 +63,9 @@ func (e *Executor) ExecuteActions(
 				} else {
 					summary.FilesDeleted++
 				}
+			case ActionPatch:
+				// Count patches as overwritten files
+				summary.FilesOverwritten++
 			}
 		} else {
 			summary.FailedActions++
@@ -96,6 +101,8 @@ func (e *Executor) executeAction(action ActionItem, leftDir, rightDir string) Ex
 	case ActionIgnore:
 		result.Success = true
 		result.Message = "Ignored"
+	case ActionPatch:
+		result = e.executePatch(leftPath, rightPath, action, leftDir, rightDir)
 	default:
 		result.Success = false
 		result.Error = fmt.Errorf("unknown action type: %s", action.Action.String())
@@ -103,6 +110,130 @@ func (e *Executor) executeAction(action ActionItem, leftDir, rightDir string) Ex
 	}
 
 	return result
+}
+
+// executePatch applies patch files for the given file
+func (e *Executor) executePatch(leftPath, rightPath string, action ActionItem, leftDir, rightDir string) ExecutionResult {
+	result := ExecutionResult{
+		Action: action,
+	}
+
+	// Find patch files for this file (they may have different session IDs)
+	leftPatches := e.findPatchFiles(leftPath)
+	rightPatches := e.findPatchFiles(rightPath)
+
+	var appliedFiles []string
+	var totalBytes int64
+
+	// Apply left patches
+	for _, patchFile := range leftPatches {
+		if e.dryRun {
+			appliedFiles = append(appliedFiles, fmt.Sprintf("LEFT:%s", filepath.Base(patchFile)))
+			util.DebugPrintf("DRY RUN: Would apply patch %s to %s", patchFile, leftPath)
+		} else {
+			if err := e.applyPatchFile(patchFile, leftPath); err != nil {
+				result.Success = false
+				result.Error = fmt.Errorf("failed to apply left patch %s: %w", patchFile, err)
+				return result
+			}
+			appliedFiles = append(appliedFiles, fmt.Sprintf("LEFT:%s", filepath.Base(patchFile)))
+
+			// Get file size for statistics
+			if info, err := os.Stat(leftPath); err == nil {
+				totalBytes += info.Size()
+			}
+		}
+	}
+
+	// Apply right patches
+	for _, patchFile := range rightPatches {
+		if e.dryRun {
+			appliedFiles = append(appliedFiles, fmt.Sprintf("RIGHT:%s", filepath.Base(patchFile)))
+			util.DebugPrintf("DRY RUN: Would apply patch %s to %s", patchFile, rightPath)
+		} else {
+			if err := e.applyPatchFile(patchFile, rightPath); err != nil {
+				result.Success = false
+				result.Error = fmt.Errorf("failed to apply right patch %s: %w", patchFile, err)
+				return result
+			}
+			appliedFiles = append(appliedFiles, fmt.Sprintf("RIGHT:%s", filepath.Base(patchFile)))
+
+			// Get file size for statistics
+			if info, err := os.Stat(rightPath); err == nil {
+				totalBytes += info.Size()
+			}
+		}
+	}
+
+	if len(appliedFiles) == 0 {
+		result.Success = false
+		result.Error = fmt.Errorf("no patch files found for %s", action.RelativePath)
+		result.Message = "Failed: No patch files found"
+		return result
+	}
+
+	result.Success = true
+	result.BytesCopied = totalBytes
+	if e.dryRun {
+		result.Message = fmt.Sprintf("Would apply patches: %v", appliedFiles)
+	} else {
+		result.Message = fmt.Sprintf("Applied patches: %v", appliedFiles)
+	}
+
+	return result
+}
+
+// findPatchFiles finds all patch files for a given original file
+func (e *Executor) findPatchFiles(originalFile string) []string {
+	dir := filepath.Dir(originalFile)
+	base := filepath.Base(originalFile)
+
+	var patches []string
+
+	// Look for files matching pattern: originalfile.*.patch
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return patches // Return empty slice on error
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		// Check if this is a patch file for our base file
+		if len(name) > len(base)+7 && // base + ".*.patch" (minimum)
+			name[:len(base)] == base &&
+			name[len(base)] == '.' &&
+			len(name) >= 6 && name[len(name)-6:] == ".patch" {
+			patches = append(patches, filepath.Join(dir, name))
+		}
+	}
+
+	return patches
+}
+
+// applyPatchFile applies a single patch file to a target file using the same logic as TUI
+func (e *Executor) applyPatchFile(patchFile, targetFile string) error {
+	return ApplyPatchToFile(patchFile, targetFile)
+}
+
+// ApplyPatchToFile applies a patch file to a target file (shared with TUI)
+func ApplyPatchToFile(patchPath, targetFile string) error {
+	util.DebugPrintf("Applying patch %s to %s", patchPath, targetFile)
+
+	cmd := exec.Command("patch", targetFile)
+	patchContent, err := os.ReadFile(patchPath)
+	if err != nil {
+		return fmt.Errorf("failed to read patch file: %w", err)
+	}
+
+	cmd.Stdin = strings.NewReader(string(patchContent))
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		return fmt.Errorf("patch command failed: %w (output: %s)", err, string(output))
+	}
+
+	util.DebugPrintf("Patch applied successfully: %s", string(output))
+	return nil
 }
 
 // executeCopy copies a file from source to destination

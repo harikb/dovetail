@@ -1495,7 +1495,7 @@ func (m *Model) applyExistingPatches(result compare.ComparisonResult) error {
 		}
 
 		// Apply existing patch to temp file
-		if err := m.applyPatchToFile(leftPatchPath, m.tempLeftFile); err != nil {
+		if err := action.ApplyPatchToFile(leftPatchPath, m.tempLeftFile); err != nil {
 			return fmt.Errorf("failed to apply existing left patch: %w", err)
 		}
 		m.leftPatchApplied = true
@@ -1517,7 +1517,7 @@ func (m *Model) applyExistingPatches(result compare.ComparisonResult) error {
 		}
 
 		// Apply existing patch to temp file
-		if err := m.applyPatchToFile(rightPatchPath, m.tempRightFile); err != nil {
+		if err := action.ApplyPatchToFile(rightPatchPath, m.tempRightFile); err != nil {
 			return fmt.Errorf("failed to apply existing right patch: %w", err)
 		}
 		m.rightPatchApplied = true
@@ -1528,26 +1528,6 @@ func (m *Model) applyExistingPatches(result compare.ComparisonResult) error {
 	return nil
 }
 
-// applyPatchToFile applies a patch file to a target file
-func (m *Model) applyPatchToFile(patchPath, targetFile string) error {
-	util.DebugPrintf("Applying patch %s to %s", patchPath, targetFile)
-
-	cmd := exec.Command("patch", targetFile)
-	patchContent, err := os.ReadFile(patchPath)
-	if err != nil {
-		return fmt.Errorf("failed to read patch file: %w", err)
-	}
-
-	cmd.Stdin = strings.NewReader(string(patchContent))
-	output, err := cmd.CombinedOutput()
-
-	if err != nil {
-		return fmt.Errorf("patch command failed: %w (output: %s)", err, string(output))
-	}
-
-	util.DebugPrintf("Patch applied successfully: %s", string(output))
-	return nil
-}
 
 // ensureTempTargetFile creates temp clone file for the target file based on current diff direction
 // Normal view: LEFT is first → create temp LEFT file
