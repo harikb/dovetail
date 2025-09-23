@@ -14,19 +14,28 @@ import (
 
 // tuiCmd represents the tui command
 var tuiCmd = &cobra.Command{
-	Use:   "tui <DIR_LEFT> <DIR_RIGHT>",
+	Use:   "tui [LEFT_DIR] [RIGHT_DIR]",
 	Short: "Interactive TUI for directory comparison",
 	Long: `Launch an interactive terminal UI for comparing directories.
 Navigate through files with arrow keys and press Enter to view diffs.
 
+Both positional and flag formats are supported for directory specification:
+
 Examples:
+  # Positional format (easy workflow switching):
   dovetail tui /path/to/source /path/to/target
-  dovetail tui ./src ./backup --exclude-name "*.log"`,
-	Args: cobra.ExactArgs(2),
+  dovetail tui ./src ./backup --exclude-name "*.log"
+  
+  # Flag format (explicit):
+  dovetail tui --left /path/to/source --right /path/to/target
+  dovetail tui -l ./src -r ./backup --exclude-name "*.log"`,
+	Args: cobra.RangeArgs(0, 2), // [LEFT_DIR] [RIGHT_DIR] or use flags
 	RunE: runTUI,
 }
 
 var (
+	tuiLeftDir           string
+	tuiRightDir          string
 	tuiExcludeNames      []string
 	tuiExcludePaths      []string
 	tuiExcludeExtensions []string
@@ -37,6 +46,10 @@ var (
 func init() {
 	rootCmd.AddCommand(tuiCmd)
 
+	// Optional directory flags (alternative to positional args)
+	tuiCmd.Flags().StringVarP(&tuiLeftDir, "left", "l", "", "left directory path (use either flags or positional args)")
+	tuiCmd.Flags().StringVarP(&tuiRightDir, "right", "r", "", "right directory path (use either flags or positional args)")
+
 	// Exclusion options (same as diff command)
 	tuiCmd.Flags().StringSliceVar(&tuiExcludeNames, "exclude-name", []string{}, "exclude files/directories by name or glob pattern")
 	tuiCmd.Flags().StringSliceVar(&tuiExcludePaths, "exclude-path", []string{}, "exclude files/directories by relative path")
@@ -46,8 +59,29 @@ func init() {
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
-	leftDir := args[0]
-	rightDir := args[1]
+	// Determine directory paths from either positional args or flags
+	var leftDir, rightDir string
+
+	hasPositionalDirs := len(args) == 2
+	hasFlagDirs := tuiLeftDir != "" && tuiRightDir != ""
+
+	if hasPositionalDirs && hasFlagDirs {
+		return fmt.Errorf("cannot use both positional directories and flags - choose one format")
+	}
+
+	if hasPositionalDirs {
+		// Use positional arguments: tui left/ right/
+		leftDir = args[0]
+		rightDir = args[1]
+	} else if hasFlagDirs {
+		// Use flag arguments: tui -l left/ -r right/
+		leftDir = tuiLeftDir
+		rightDir = tuiRightDir
+	} else {
+		return fmt.Errorf("directories must be specified either as positional args or flags:\n" +
+			"  Positional: tui <LEFT_DIR> <RIGHT_DIR>\n" +
+			"  Flags:      tui --left <LEFT_DIR> --right <RIGHT_DIR>")
+	}
 
 	// Validate directories exist
 	if err := validateDirectory(leftDir); err != nil {
@@ -98,6 +132,9 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		cfg.Exclusions.Extensions = append(cfg.Exclusions.Extensions, gitignoreResult.Extensions...)
 	}
 
+	// Automatically exclude .patch files created by hunk operations
+	cfg.Exclusions.Extensions = append(cfg.Exclusions.Extensions, "patch")
+
 	// Create comparison options from config
 	options := compare.ComparisonOptions{
 		ExcludeNames:      cfg.Exclusions.Names,
@@ -120,6 +157,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	results, summary, err := engine.Compare(leftDir, rightDir)
 	if err != nil {
 		return fmt.Errorf("comparison failed: %w", err)
+	}
+
+	// Configure logger for TUI mode (file-only, no stderr output)
+	if err := util.SetTUIMode(); err != nil {
+		return fmt.Errorf("failed to configure TUI logging: %w", err)
 	}
 
 	// Launch TUI with profiling cleanup

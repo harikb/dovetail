@@ -13,19 +13,26 @@ import (
 
 // applyCmd represents the apply command
 var applyCmd = &cobra.Command{
-	Use:   "apply <ACTION_FILE>",
+	Use:   "apply <ACTION_FILE> [LEFT_DIR] [RIGHT_DIR]",
 	Short: "Execute actions from an action file",
 	Long: `Execute the synchronization actions specified in an action file.
 This will perform actual file operations (copy, delete, etc.) based on
 the actions you've specified in the action file.
 
-WARNING: This command will modify your filesystem. Always run 'dry-run'
+WARNING: This command will modify your filesystem. Always run 'dry'
 first to preview the actions that will be taken.
 
+Both positional and flag formats are supported for directory specification:
+
 Examples:
+  # Positional format (easy workflow switching):
+  dovetail apply actions.txt /path/to/source /path/to/target
+  dovetail apply my_sync.txt ./src ./backup --force
+  
+  # Flag format (explicit):
   dovetail apply actions.txt --left /path/to/source --right /path/to/target
   dovetail apply my_sync.txt -l ./src -r ./backup --force`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.RangeArgs(1, 3), // ACTION_FILE [LEFT_DIR] [RIGHT_DIR]
 	RunE: runApply,
 }
 
@@ -38,14 +45,12 @@ var (
 func init() {
 	rootCmd.AddCommand(applyCmd)
 
-	// Required directory flags
-	applyCmd.Flags().StringVarP(&applyLeftDir, "left", "l", "", "left directory path (required)")
-	applyCmd.Flags().StringVarP(&applyRightDir, "right", "r", "", "right directory path (required)")
+	// Optional directory flags (alternative to positional args)
+	applyCmd.Flags().StringVarP(&applyLeftDir, "left", "l", "", "left directory path (use either flags or positional args)")
+	applyCmd.Flags().StringVarP(&applyRightDir, "right", "r", "", "right directory path (use either flags or positional args)")
 	applyCmd.Flags().BoolVar(&forceApply, "force", false, "skip confirmation prompt")
 
-	// Mark as required
-	applyCmd.MarkFlagRequired("left")
-	applyCmd.MarkFlagRequired("right")
+	// Note: flags are no longer required - either flags OR positional args must be provided
 }
 
 func runApply(cmd *cobra.Command, args []string) error {
@@ -59,20 +64,44 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to access action file %s: %w", actionFile, err)
 	}
 
+	// Determine directory paths from either positional args or flags
+	var leftDir, rightDir string
+
+	hasPositionalDirs := len(args) == 3
+	hasFlagDirs := applyLeftDir != "" && applyRightDir != ""
+
+	if hasPositionalDirs && hasFlagDirs {
+		return fmt.Errorf("cannot use both positional directories and flags - choose one format")
+	}
+
+	if hasPositionalDirs {
+		// Use positional arguments: apply actions.txt left/ right/
+		leftDir = args[1]
+		rightDir = args[2]
+	} else if hasFlagDirs {
+		// Use flag arguments: apply actions.txt -l left/ -r right/
+		leftDir = applyLeftDir
+		rightDir = applyRightDir
+	} else {
+		return fmt.Errorf("directories must be specified either as positional args or flags:\n"+
+			"  Positional: apply %s <LEFT_DIR> <RIGHT_DIR>\n"+
+			"  Flags:      apply %s --left <LEFT_DIR> --right <RIGHT_DIR>", actionFile, actionFile)
+	}
+
 	// Validate directories exist
-	if err := validateDirectory(applyLeftDir); err != nil {
+	if err := validateDirectory(leftDir); err != nil {
 		return fmt.Errorf("left directory: %w", err)
 	}
-	if err := validateDirectory(applyRightDir); err != nil {
+	if err := validateDirectory(rightDir); err != nil {
 		return fmt.Errorf("right directory: %w", err)
 	}
 
 	// Convert to absolute paths
-	leftDir, err := filepath.Abs(applyLeftDir)
+	leftDir, err := filepath.Abs(leftDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve left directory path: %w", err)
 	}
-	rightDir, err := filepath.Abs(applyRightDir)
+	rightDir, err = filepath.Abs(rightDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve right directory path: %w", err)
 	}

@@ -11,19 +11,26 @@ import (
 	"github.com/harikb/dovetail/internal/util"
 )
 
-// dryrunCmd represents the dry-run command
-var dryrunCmd = &cobra.Command{
-	Use:   "dry-run <ACTION_FILE>",
+// dryCmd represents the dry command
+var dryCmd = &cobra.Command{
+	Use:   "dry <ACTION_FILE> [LEFT_DIR] [RIGHT_DIR]",
 	Short: "Preview actions from an action file without executing them",
 	Long: `Preview the actions that would be taken when applying an action file.
 This shows exactly what files would be copied, deleted, or modified without
 actually performing any operations. Use this to verify your action file
 before running 'dovetail apply'.
 
+Both positional and flag formats are supported for directory specification:
+
 Examples:
-  dovetail dry-run actions.txt --left /path/to/source --right /path/to/target
-  dovetail dry-run my_sync.txt -l ./src -r ./backup`,
-	Args: cobra.ExactArgs(1),
+  # Positional format (easy workflow switching):
+  dovetail dry actions.txt /path/to/source /path/to/target
+  dovetail dry my_sync.txt ./src ./backup
+  
+  # Flag format (explicit):
+  dovetail dry actions.txt --left /path/to/source --right /path/to/target
+  dovetail dry my_sync.txt -l ./src -r ./backup`,
+	Args: cobra.RangeArgs(1, 3), // ACTION_FILE [LEFT_DIR] [RIGHT_DIR]
 	RunE: runDryRun,
 }
 
@@ -33,15 +40,13 @@ var (
 )
 
 func init() {
-	rootCmd.AddCommand(dryrunCmd)
+	rootCmd.AddCommand(dryCmd)
 
-	// Required directory flags
-	dryrunCmd.Flags().StringVarP(&dryRunLeftDir, "left", "l", "", "left directory path (required)")
-	dryrunCmd.Flags().StringVarP(&dryRunRightDir, "right", "r", "", "right directory path (required)")
+	// Optional directory flags (alternative to positional args)
+	dryCmd.Flags().StringVarP(&dryRunLeftDir, "left", "l", "", "left directory path (use either flags or positional args)")
+	dryCmd.Flags().StringVarP(&dryRunRightDir, "right", "r", "", "right directory path (use either flags or positional args)")
 
-	// Mark as required
-	dryrunCmd.MarkFlagRequired("left")
-	dryrunCmd.MarkFlagRequired("right")
+	// Note: flags are no longer required - either flags OR positional args must be provided
 }
 
 func runDryRun(cmd *cobra.Command, args []string) error {
@@ -55,20 +60,44 @@ func runDryRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to access action file %s: %w", actionFile, err)
 	}
 
+	// Determine directory paths from either positional args or flags
+	var leftDir, rightDir string
+
+	hasPositionalDirs := len(args) == 3
+	hasFlagDirs := dryRunLeftDir != "" && dryRunRightDir != ""
+
+	if hasPositionalDirs && hasFlagDirs {
+		return fmt.Errorf("cannot use both positional directories and flags - choose one format")
+	}
+
+	if hasPositionalDirs {
+		// Use positional arguments: dry actions.txt left/ right/
+		leftDir = args[1]
+		rightDir = args[2]
+	} else if hasFlagDirs {
+		// Use flag arguments: dry actions.txt -l left/ -r right/
+		leftDir = dryRunLeftDir
+		rightDir = dryRunRightDir
+	} else {
+		return fmt.Errorf("directories must be specified either as positional args or flags:\n"+
+			"  Positional: dry %s <LEFT_DIR> <RIGHT_DIR>\n"+
+			"  Flags:      dry %s --left <LEFT_DIR> --right <RIGHT_DIR>", actionFile, actionFile)
+	}
+
 	// Validate directories exist
-	if err := validateDirectory(dryRunLeftDir); err != nil {
+	if err := validateDirectory(leftDir); err != nil {
 		return fmt.Errorf("left directory: %w", err)
 	}
-	if err := validateDirectory(dryRunRightDir); err != nil {
+	if err := validateDirectory(rightDir); err != nil {
 		return fmt.Errorf("right directory: %w", err)
 	}
 
 	// Convert to absolute paths
-	leftDir, err := filepath.Abs(dryRunLeftDir)
+	leftDir, err := filepath.Abs(leftDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve left directory path: %w", err)
 	}
-	rightDir, err := filepath.Abs(dryRunRightDir)
+	rightDir, err = filepath.Abs(rightDir)
 	if err != nil {
 		return fmt.Errorf("failed to resolve right directory path: %w", err)
 	}

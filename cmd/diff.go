@@ -17,21 +17,30 @@ import (
 
 // diffCmd represents the diff command
 var diffCmd = &cobra.Command{
-	Use:   "diff <DIR_LEFT> <DIR_RIGHT>",
+	Use:   "diff [LEFT_DIR] [RIGHT_DIR]",
 	Short: "Compare two directories and generate action file",
 	Long: `Compare two directories recursively and generate an action file that can be 
 used to synchronize them. The action file will contain all differences with default
 'ignore' actions, which you can then edit to specify the desired synchronization actions.
 
+Both positional and flag formats are supported for directory specification:
+
 Examples:
+  # Positional format (easy workflow switching):
   dovetail diff /path/to/source /path/to/target -o actions.txt
   dovetail diff ./src ./backup --show-diff --ignore-whitespace
-  dovetail diff dir1 dir2 --exclude-name "*.log" "*.tmp" --exclude-path "build/"`,
-	Args: cobra.ExactArgs(2),
+  dovetail diff dir1 dir2 --exclude-name "*.log" "*.tmp" --exclude-path "build/"
+  
+  # Flag format (explicit):
+  dovetail diff --left /path/to/source --right /path/to/target -o actions.txt
+  dovetail diff -l ./src -r ./backup --show-diff --ignore-whitespace`,
+	Args: cobra.RangeArgs(0, 2), // [LEFT_DIR] [RIGHT_DIR] or use flags
 	RunE: runDiff,
 }
 
 var (
+	diffLeftDir       string
+	diffRightDir      string
 	outputFile        string
 	showDiff          bool
 	showDiffFile      string
@@ -45,6 +54,10 @@ var (
 
 func init() {
 	rootCmd.AddCommand(diffCmd)
+
+	// Optional directory flags (alternative to positional args)
+	diffCmd.Flags().StringVarP(&diffLeftDir, "left", "l", "", "left directory path (use either flags or positional args)")
+	diffCmd.Flags().StringVarP(&diffRightDir, "right", "r", "", "right directory path (use either flags or positional args)")
 
 	// Output options
 	diffCmd.Flags().StringVarP(&outputFile, "output", "o", "", "output action file path (required unless --show-diff)")
@@ -65,8 +78,29 @@ func init() {
 }
 
 func runDiff(cmd *cobra.Command, args []string) error {
-	leftDir := args[0]
-	rightDir := args[1]
+	// Determine directory paths from either positional args or flags
+	var leftDir, rightDir string
+
+	hasPositionalDirs := len(args) == 2
+	hasFlagDirs := diffLeftDir != "" && diffRightDir != ""
+
+	if hasPositionalDirs && hasFlagDirs {
+		return fmt.Errorf("cannot use both positional directories and flags - choose one format")
+	}
+
+	if hasPositionalDirs {
+		// Use positional arguments: diff left/ right/
+		leftDir = args[0]
+		rightDir = args[1]
+	} else if hasFlagDirs {
+		// Use flag arguments: diff -l left/ -r right/
+		leftDir = diffLeftDir
+		rightDir = diffRightDir
+	} else {
+		return fmt.Errorf("directories must be specified either as positional args or flags:\n" +
+			"  Positional: diff <LEFT_DIR> <RIGHT_DIR> [options]\n" +
+			"  Flags:      diff --left <LEFT_DIR> --right <RIGHT_DIR> [options]")
+	}
 
 	// Validate directories exist
 	if err := validateDirectory(leftDir); err != nil {
@@ -128,6 +162,9 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		cfg.Exclusions.Paths = append(cfg.Exclusions.Paths, gitignoreResult.Paths...)
 		cfg.Exclusions.Extensions = append(cfg.Exclusions.Extensions, gitignoreResult.Extensions...)
 	}
+
+	// Automatically exclude .patch files created by hunk operations
+	cfg.Exclusions.Extensions = append(cfg.Exclusions.Extensions, "patch")
 
 	if cfg.General.Verbose >= 1 {
 		fmt.Printf("Comparing directories:\n")
@@ -205,8 +242,8 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("Action file generated: %s\n", outputFile)
 		fmt.Printf("Edit this file to specify the actions you want to take, then run:\n")
-		fmt.Printf("  dovetail dry-run %s -l %s -r %s  # to preview actions\n", outputFile, leftDir, rightDir)
-		fmt.Printf("  dovetail apply %s -l %s -r %s    # to execute actions\n", outputFile, leftDir, rightDir)
+		fmt.Printf("  dovetail dry %s %s %s  # to preview actions\n", outputFile, leftDir, rightDir)
+		fmt.Printf("  dovetail apply %s %s %s    # to execute actions\n", outputFile, leftDir, rightDir)
 
 		return nil
 	}

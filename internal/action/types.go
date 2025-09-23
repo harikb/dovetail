@@ -16,6 +16,7 @@ const (
 	ActionDeleteLeft                    // [x-] - Delete from left
 	ActionDeleteRight                   // [-x] - Delete from right
 	ActionDeleteBoth                    // [xx] - Delete from both
+	ActionPatch                         // [p] - Apply patch from session
 )
 
 func (a ActionType) String() string {
@@ -32,6 +33,8 @@ func (a ActionType) String() string {
 		return "-x"
 	case ActionDeleteBoth:
 		return "xx"
+	case ActionPatch:
+		return "p"
 	default:
 		return "?"
 	}
@@ -51,6 +54,8 @@ func (a ActionType) Description() string {
 		return "Delete file from Right"
 	case ActionDeleteBoth:
 		return "Delete file from both Left and Right"
+	case ActionPatch:
+		return "Apply patch file generated from hunk session"
 	default:
 		return "Unknown action"
 	}
@@ -71,6 +76,8 @@ func ParseActionType(s string) (ActionType, bool) {
 		return ActionDeleteRight, true
 	case "xx":
 		return ActionDeleteBoth, true
+	case "p":
+		return ActionPatch, true
 	default:
 		return ActionIgnore, false
 	}

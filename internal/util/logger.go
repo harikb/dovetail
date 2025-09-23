@@ -186,3 +186,39 @@ func IsLogEnabled() bool {
 func GetLogger() *slog.Logger {
 	return logger
 }
+
+// SetTUIMode reconfigures the logger to output only to file (never stderr)
+// This prevents debug logs from corrupting the TUI display
+func SetTUIMode() error {
+	if !logEnabled || logFile == nil {
+		// Logging not enabled, nothing to reconfigure
+		return nil
+	}
+
+	// Reconfigure logger to only write to file (never stderr)
+	var logLevel slog.Level
+	if logger.Enabled(nil, slog.LevelDebug) {
+		logLevel = slog.LevelDebug
+	} else {
+		logLevel = slog.LevelInfo
+	}
+
+	// Create handler that ONLY writes to file
+	handler := slog.NewTextHandler(logFile, &slog.HandlerOptions{
+		Level: logLevel,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Simplify the timestamp format
+			if a.Key == slog.TimeKey {
+				a.Value = slog.StringValue(a.Value.Time().Format("15:04:05"))
+			}
+			return a
+		},
+	})
+
+	logger = slog.New(handler)
+
+	// Log the mode change
+	logger.Info("=== Logger reconfigured for TUI mode (file-only output) ===")
+
+	return nil
+}
