@@ -70,16 +70,25 @@ type Engine struct {
 	verboseLevel int
 }
 
+// PatchFileInfo represents a detected patch file from previous runs
+type PatchFileInfo struct {
+	PatchPath    string // Path to the patch file (e.g., "src/main.go.20240924_151230.patch")
+	BaseFilePath string // Path to the base file (e.g., "src/main.go")
+	Timestamp    string // Extracted timestamp (e.g., "20240924_151230")
+	Side         string // Which directory it was found in ("left" or "right")
+}
+
 // ComparisonSummary contains statistics about the comparison
 type ComparisonSummary struct {
-	TotalFiles        int
-	IdenticalFiles    int
-	ModifiedFiles     int
-	OnlyLeftFiles     int
-	OnlyRightFiles    int
-	TotalDirs         int
-	IdenticalDirs     int
-	OnlyLeftDirs      int
-	OnlyRightDirs     int
-	ErrorsEncountered []string
+	TotalFiles         int
+	IdenticalFiles     int
+	ModifiedFiles      int
+	OnlyLeftFiles      int
+	OnlyRightFiles     int
+	TotalDirs          int
+	IdenticalDirs      int
+	OnlyLeftDirs       int
+	OnlyRightDirs      int
+	ErrorsEncountered  []string
+	DetectedPatchFiles []PatchFileInfo // Patch files from previous dovetail runs
 }

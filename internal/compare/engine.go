@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/harikb/dovetail/internal/util"
@@ -37,14 +39,14 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 
 	// Collect all files from both directories
 	util.VerbosePrintf(e.verboseLevel, 1, "Scanning left directory: %s", leftDir)
-	leftFiles, err := e.collectFiles(leftDir, "left")
+	leftFiles, leftPatchFiles, err := e.collectFiles(leftDir, "left")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to scan left directory: %w", err)
 	}
 	util.VerbosePrintf(e.verboseLevel, 1, "Found %d items in left directory", len(leftFiles))
 
 	util.VerbosePrintf(e.verboseLevel, 1, "Scanning right directory: %s", rightDir)
-	rightFiles, err := e.collectFiles(rightDir, "right")
+	rightFiles, rightPatchFiles, err := e.collectFiles(rightDir, "right")
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to scan right directory: %w", err)
 	}
@@ -64,6 +66,14 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 	// Compare files in parallel
 	results := make([]ComparisonResult, 0, len(allPaths))
 	summary := &ComparisonSummary{}
+
+	// Merge patch files from both directories into summary
+	allPatchFiles := append(leftPatchFiles, rightPatchFiles...)
+	summary.DetectedPatchFiles = allPatchFiles
+	if len(allPatchFiles) > 0 {
+		util.VerbosePrintf(e.verboseLevel, 1, "Total patch files detected: %d", len(allPatchFiles))
+	}
+
 	resultsChan := make(chan ComparisonResult, len(allPaths))
 	errorsChan := make(chan error, len(allPaths))
 
@@ -87,7 +97,7 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 			// Report progress
 			progressReporter.Report("Comparing: %s", p)
 
-			result, err := e.compareFile(p, leftInfo, rightInfo, leftDir, rightDir)
+			result, err := e.compareFile(p, leftInfo, rightInfo)
 			if err != nil {
 				errorsChan <- fmt.Errorf("error comparing %s: %w", p, err)
 				return
@@ -120,9 +130,13 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 	return results, summary, nil
 }
 
+// patchFilePattern matches our patch file format: filename.YYYYMMDD_HHMMSS.patch
+var patchFilePattern = regexp.MustCompile(`^(.+)\.(\d{8}_\d{6})\.patch$`)
+
 // collectFiles recursively collects all files from a directory
-func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, error) {
+func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []PatchFileInfo, error) {
 	files := make(map[string]*FileInfo)
+	var patchFiles []PatchFileInfo
 	fileCount := 0
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -146,6 +160,33 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, er
 		// Report current directory being scanned
 		if info.IsDir() {
 			util.VerbosePrintf(e.verboseLevel, 2, "Scanning directory (%s): %s", side, relPath)
+		}
+
+		// Check for patch files from previous dovetail runs (BEFORE applying filters)
+		if !info.IsDir() {
+			filename := filepath.Base(relPath)
+			if matches := patchFilePattern.FindStringSubmatch(filename); matches != nil {
+				timestamp := matches[2]
+
+				// Calculate base file path (patch file path without the timestamp and .patch extension)
+				basePath := strings.TrimSuffix(relPath, "."+timestamp+".patch")
+
+				// Check if base file exists in same directory
+				baseFileAbsPath := filepath.Join(dir, basePath)
+				if _, err := os.Stat(baseFileAbsPath); err == nil {
+					// Base file exists - this is "our" patch file
+					patchInfo := PatchFileInfo{
+						PatchPath:    relPath,
+						BaseFilePath: basePath,
+						Timestamp:    timestamp,
+						Side:         side,
+					}
+					patchFiles = append(patchFiles, patchInfo)
+					util.VerbosePrintf(e.verboseLevel, 2, "Detected patch file (%s): %s -> %s", side, relPath, basePath)
+				} else {
+					util.VerbosePrintf(e.verboseLevel, 3, "Ignoring patch file (%s): %s (base file %s not found)", side, relPath, basePath)
+				}
+			}
 		}
 
 		// Apply filters
@@ -195,13 +236,16 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, er
 
 	if e.verboseLevel >= 2 {
 		util.VerbosePrintf(e.verboseLevel, 2, "Completed scan of %s: %d files found", side, fileCount)
+		if len(patchFiles) > 0 {
+			util.VerbosePrintf(e.verboseLevel, 1, "Found %d patch files from previous runs (%s)", len(patchFiles), side)
+		}
 	}
 
-	return files, err
+	return files, patchFiles, err
 }
 
 // compareFile compares a single file between left and right directories
-func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo, leftDir, rightDir string) (ComparisonResult, error) {
+func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo) (ComparisonResult, error) {
 	result := ComparisonResult{
 		RelativePath: relPath,
 		LeftInfo:     leftInfo,
@@ -225,7 +269,10 @@ func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo, left
 			result.Status = StatusModified
 		} else {
 			// Both are files - compare content
-			if leftInfo.Hash == rightInfo.Hash && leftInfo.Hash != "ERROR_CALCULATING_HASH" {
+			// Optimization: if file sizes differ, skip hash comparison
+			if leftInfo.Size != rightInfo.Size {
+				result.Status = StatusModified
+			} else if leftInfo.Hash == rightInfo.Hash && leftInfo.Hash != "ERROR_CALCULATING_HASH" {
 				result.Status = StatusIdentical
 			} else {
 				result.Status = StatusModified

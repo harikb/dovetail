@@ -54,6 +54,9 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, args []string) error {
+	// Log the exact command line for debugging
+	util.LogInfo("APPLY command invoked with: %v", os.Args)
+
 	actionFile := args[0]
 
 	// Validate action file exists

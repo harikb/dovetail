@@ -50,6 +50,9 @@ func init() {
 }
 
 func runDryRun(cmd *cobra.Command, args []string) error {
+	// Log the exact command line for debugging
+	util.LogInfo("DRY command invoked with: %v", os.Args)
+
 	actionFile := args[0]
 
 	// Validate action file exists

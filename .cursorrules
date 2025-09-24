@@ -14,6 +14,11 @@
   - Handle errors explicitly; do not hide them or let them fail silently.
   - Ensure tracebacks are always shown.
 
+## Ask for explicit confirmation *EVERY SINGLE TIME*
+ - When a new issue or bug is discussed, describe the issue first.
+ - Do not jump to fixing it even you are 100% sure that is the cause
+ - Explain the bug and the plan and ask for *EXPLICIT* confirmation before changing code.
+
 Do not use try/catch or recover (in Go) to suppress errors or to log-and-ignore.
 ## Testing
 - Always test TUI changes with actual file comparisons
