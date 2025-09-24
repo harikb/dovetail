@@ -225,12 +225,16 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				newModel.currentDiff = ""
 				newModel.err = nil
 				newModel.diffViewportTop = 0
+				newModel.reversedDiff = false // Reset revert mode when returning to file list
+				newModel.saveMessage = ""     // Clear any revert mode messages
 				return newModel, cmd
 			}
 			m.showingDiff = false
 			m.currentDiff = ""
 			m.err = nil
-			m.diffViewportTop = 0 // Reset scroll position
+			m.diffViewportTop = 0  // Reset scroll position
+			m.reversedDiff = false // Reset revert mode when returning to file list
+			m.saveMessage = ""     // Clear any revert mode messages
 		} else {
 			// In file list, q quits the application
 			// Call profiling cleanup before quitting
@@ -253,7 +257,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.showingDiff = false
 			m.currentDiff = ""
 			m.err = nil
-			m.diffViewportTop = 0 // Reset scroll position
+			m.diffViewportTop = 0  // Reset scroll position
+			m.reversedDiff = false // Reset revert mode when returning to file list
+			m.saveMessage = ""     // Clear any revert mode messages
 		} else if m.searchString != "" {
 			// Clear search in normal mode
 			m.searchString = ""
@@ -301,7 +307,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter", "space", " ":
 		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && len(m.results) > 0 {
-			// Load diff for selected file
+			// Load diff for selected file - reset revert mode for new file
+			m.reversedDiff = false
+			m.saveMessage = "" // Clear any revert mode messages
 			return m, m.loadDiff()
 		} else if m.showingDiff && !m.hunkMode {
 			// Enter hunk mode for selective editing
@@ -392,11 +400,12 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Use simplified delete - only valid for files that exist on one side only
 			result := m.results[m.cursor]
 			var deleteAction action.ActionType
-			if result.Status == compare.StatusOnlyLeft {
+			switch result.Status {
+			case compare.StatusOnlyLeft:
 				deleteAction = action.ActionDeleteLeft
-			} else if result.Status == compare.StatusOnlyRight {
+			case compare.StatusOnlyRight:
 				deleteAction = action.ActionDeleteRight
-			} else {
+			default:
 				// Show error for files that exist on both sides
 				m.saveMessage = fmt.Sprintf("Delete not valid for %s files (exists on both sides)",
 					result.Status.String())
@@ -456,7 +465,11 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.currentHunk = 0
 				m.appliedHunks = nil
 			}
-			m.saveMessage = fmt.Sprintf("Diff reversed: %t", m.reversedDiff)
+			if m.reversedDiff {
+				m.saveMessage = "⚠ REVERT MODE enabled - applying changes RIGHT → LEFT"
+			} else {
+				m.saveMessage = "Normal mode restored - applying changes LEFT → RIGHT"
+			}
 			// Reload diff with new direction
 			return m, m.loadDiff()
 		} else {
@@ -764,16 +777,27 @@ func (m Model) viewDiff() string {
 		result := m.results[m.cursor]
 
 		// Show different header for hunk mode and direction
-		direction := "LEFT → RIGHT"
+		var directionText string
+		var directionStyle lipgloss.Style
 		if m.reversedDiff {
-			direction = "RIGHT → LEFT"
+			// REVERT mode - bright yellow background with black text for high visibility
+			directionStyle = lipgloss.NewStyle().Background(lipgloss.Color("11")).Foreground(lipgloss.Color("0")).Bold(true)
+			directionText = directionStyle.Render("⚠ REVERT MODE: RIGHT → LEFT")
+		} else {
+			// Normal mode - subtle gray text
+			directionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+			directionText = directionStyle.Render("LEFT → RIGHT")
 		}
 
 		if m.hunkMode {
-			b.WriteString(headerStyle.Render(fmt.Sprintf("Hunk Mode: %s (%s) (Hunk %d of %d)",
-				result.RelativePath, direction, m.currentHunk+1, len(m.hunks))))
+			b.WriteString(headerStyle.Render(fmt.Sprintf("Hunk Mode: %s", result.RelativePath)))
+			b.WriteString(" ")
+			b.WriteString(directionText)
+			b.WriteString(headerStyle.Render(fmt.Sprintf(" (Hunk %d of %d)", m.currentHunk+1, len(m.hunks))))
 		} else {
-			b.WriteString(headerStyle.Render(fmt.Sprintf("Diff: %s (%s)", result.RelativePath, direction)))
+			b.WriteString(headerStyle.Render(fmt.Sprintf("Diff: %s", result.RelativePath)))
+			b.WriteString(" ")
+			b.WriteString(directionText)
 		}
 		b.WriteString("\n")
 
@@ -847,11 +871,11 @@ func (m Model) viewDiff() string {
 				appliedCount++
 			}
 		}
-		b.WriteString(helpStyle.Render("n/p: next/prev hunk  >: apply hunk  r: reverse diff  ESC: exit hunk mode"))
+		b.WriteString(helpStyle.Render("n/p: next/prev hunk  <: apply hunk  r: toggle revert mode  ESC: exit hunk mode"))
 		b.WriteString("\n")
 		b.WriteString(helpStyle.Render(fmt.Sprintf("Applied: %d hunks", appliedCount)))
 	} else {
-		b.WriteString(helpStyle.Render("↑/↓: scroll  PgUp/PgDn: page  r: reverse diff  SPACE: enter hunk mode  Esc/q: back to file list"))
+		b.WriteString(helpStyle.Render("↑/↓: scroll  PgUp/PgDn: page  r: toggle revert mode  SPACE: enter hunk mode  Esc/q: back to file list"))
 	}
 
 	return b.String()
@@ -1367,7 +1391,7 @@ func (m Model) applyCurrentHunk() (Model, tea.Cmd) {
 	// Show which direction the diff is currently in
 	directionStr := "left→right"
 	if m.reversedDiff {
-		directionStr = "right→left"
+		directionStr = "revert right→left"
 	}
 	m.saveMessage = fmt.Sprintf("Applied hunk %d/%d (%s)", m.currentHunk+1, len(m.hunks), directionStr)
 	util.DebugPrintf("Hunk applied successfully, regenerating diff...")
@@ -1527,7 +1551,6 @@ func (m *Model) applyExistingPatches(result compare.ComparisonResult) error {
 	util.DebugPrintf("=== applyExistingPatches SUCCESS ===")
 	return nil
 }
-
 
 // ensureTempTargetFile creates temp clone file for the target file based on current diff direction
 // Normal view: LEFT is first → create temp LEFT file
