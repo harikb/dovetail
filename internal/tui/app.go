@@ -147,6 +147,9 @@ type Model struct {
 	showingDiscardConfirm bool   // Whether discard confirmation is shown
 	discardFilePath       string // File path for discard confirmation
 
+	// Quit confirmation with unsaved changes
+	showingQuitConfirm bool // Whether quit confirmation is shown
+
 	// Search functionality
 	searchMode    bool   // Are we in search input mode?
 	searchString  string // Current search term
@@ -276,11 +279,17 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.saveMessage = ""     // Clear any revert mode messages
 		} else {
 			// In file list, q quits the application
-			// Call profiling cleanup before quitting
-			if cleanup := getProfilingCleanup(); cleanup != nil {
-				cleanup()
+			if m.hasUnsavedChanges {
+				// Show quit confirmation if there are unsaved changes
+				m.showingQuitConfirm = true
+				return m, nil
+			} else {
+				// Call profiling cleanup before quitting
+				if cleanup := getProfilingCleanup(); cleanup != nil {
+					cleanup()
+				}
+				return m, tea.Quit
 			}
-			return m, tea.Quit
 		}
 
 	case "esc":
@@ -293,6 +302,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.showingPatchCleanup {
 			// Cancel patch cleanup confirmation
 			return m.handlePatchCleanupConfirm(false)
+		} else if m.showingQuitConfirm {
+			// Cancel quit confirmation
+			return m.handleQuitConfirm(false)
 		} else if m.hunkMode {
 			util.DebugPrintf("ESC pressed in hunk mode - calling exitHunkMode()")
 			// Exit hunk mode, save patches if any changes made
@@ -325,6 +337,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Handle patch cleanup confirmation
 		if m.showingPatchCleanup {
 			return m.handlePatchCleanupConfirm(true)
+		}
+		// Handle quit confirmation
+		if m.showingQuitConfirm {
+			return m.handleQuitConfirm(true)
 		}
 
 	case "up", "k":
@@ -359,7 +375,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter", "space", " ":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && len(m.results) > 0 {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
 			// Load diff for selected file - reset revert mode for new file
 			m.reversedDiff = false
 			m.saveMessage = "" // Clear any revert mode messages
@@ -423,7 +439,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Interactive action keys - file list view or hunk mode
 	case ">":
 		// Only available in file list mode for whole-file copy operations
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && len(m.results) > 0 {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
 			util.DebugPrintf("Setting file action COPY-TO-RIGHT")
 			return m.setAction(action.ActionCopyToRight), nil
 		}
@@ -432,9 +448,12 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			util.DebugPrintf("Applying visible hunk (<) - currentHunk=%d", m.currentHunk)
 			// Apply current hunk as displayed (user controls direction with 'r')
 			return m.applyCurrentHunk()
+		} else if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && len(m.results) > 0 {
+			util.DebugPrintf("Setting file action COPY-TO-LEFT")
+			return m.setAction(action.ActionCopyToLeft), nil
 		}
 	case "i":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && len(m.results) > 0 {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
 			result := m.results[m.cursor]
 			currentAction := m.fileActions[result.RelativePath]
 
@@ -449,7 +468,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "x":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && len(m.results) > 0 {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
 			// Use simplified delete - only valid for files that exist on one side only
 			result := m.results[m.cursor]
 			var deleteAction action.ActionType
@@ -467,21 +486,21 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.setAction(deleteAction), nil
 		}
 	case "s":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm {
 			return m.saveActionFile()
 		}
 	case "d":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && m.hasUnappliedChanges {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && m.hasUnappliedChanges {
 			return m.runDryRun()
 		}
 	case "a":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && m.hasUnappliedChanges {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && m.hasUnappliedChanges {
 			return m.runApply()
 		}
 
 	// Search functionality
 	case "/":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup {
+		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm {
 			m.searchMode = true
 			m.searchString = ""
 		}
@@ -495,6 +514,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.showingPatchCleanup {
 			// Handle patch cleanup confirmation (no)
 			return m.handlePatchCleanupConfirm(false)
+		} else if m.showingQuitConfirm {
+			// Handle quit confirmation (no)
+			return m.handleQuitConfirm(false)
 		} else if m.hunkMode && len(m.hunks) > 0 {
 			// Next hunk in hunk mode
 			if m.currentHunk < len(m.hunks)-1 {
@@ -787,7 +809,7 @@ func (m Model) viewFileList() string {
 			b.WriteString(helpStyle.Render("Enter: search  Esc: cancel"))
 		} else {
 			// Normal help with search commands
-			b.WriteString(helpStyle.Render("↑/↓: navigate  Enter: diff  >: copy→  i: ignore  x: delete  /: search  s: save  d: dry-run  a: apply  q: quit  Ctrl+C: force quit"))
+			b.WriteString(helpStyle.Render("↑/↓: navigate  Enter: diff  <: copy←  >: copy→  i: ignore  x: delete  /: search  s: save  d: dry-run  a: apply  q: quit  Ctrl+C: force quit"))
 			if m.searchString != "" {
 				b.WriteString("\n")
 				b.WriteString(helpStyle.Render("n: next match  N: prev match  Esc: clear search"))
@@ -864,6 +886,19 @@ func (m Model) viewFileList() string {
 		}
 
 		confirmText := fmt.Sprintf("Clean up patch files from previous runs?\n\nFound %d patch files:\n• Left directory: %d files\n• Right directory: %d files\n\nThese are leftover .patch files from previous dovetail hunk operations.\nThey are safe to remove.\n\n[y] Yes, clean up  [n] No, keep files", len(m.detectedPatchFiles), leftCount, rightCount)
+		b.WriteString(confirmStyle.Render(confirmText))
+	}
+
+	// Show quit confirmation dialog
+	if m.showingQuitConfirm {
+		b.WriteString("\n\n")
+		confirmStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("9")). // Red border for warning
+			Padding(1).
+			Margin(1)
+
+		confirmText := "Quit with unsaved changes?\n\nYou have unsaved changes that will be lost if you quit now.\nConsider saving first (press 's') to preserve your work.\n\n[y] Yes, quit anyway  [n] No, go back"
 		b.WriteString(confirmStyle.Render(confirmText))
 	}
 
@@ -1178,6 +1213,23 @@ func (m Model) handlePatchCleanupConfirm(confirm bool) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleQuitConfirm handles the quit confirmation when there are unsaved changes
+func (m Model) handleQuitConfirm(confirm bool) (tea.Model, tea.Cmd) {
+	if confirm {
+		// User confirmed quit - call profiling cleanup and quit
+		if cleanup := getProfilingCleanup(); cleanup != nil {
+			cleanup()
+		}
+		return m, tea.Quit
+	} else {
+		// User cancelled quit
+		m.showingQuitConfirm = false
+		m.saveMessage = "Quit cancelled"
+	}
+
+	return m, nil
+}
+
 func (m Model) setAction(newAction action.ActionType) Model {
 	if m.cursor >= len(m.results) {
 		return m
@@ -1231,26 +1283,34 @@ func (m Model) isActionValid(act action.ActionType, status compare.FileStatus) b
 	}
 }
 
-// saveActionFile initiates the save process
+// saveActionFileWithState handles file writing and state management
+func (m Model) saveActionFileWithState(filename string, successMessage string) (Model, error) {
+	if err := m.writeActionFile(filename); err != nil {
+		m.saveMessage = fmt.Sprintf("Error saving: %v", err)
+		return m, err
+	}
+
+	// Update state after successful save
+	m.hasUnsavedChanges = false  // Changes are now saved
+	m.hasUnappliedChanges = true // Ready to execute
+	m.saveMessage = successMessage
+
+	return m, nil
+}
+
+// saveActionFile initiates the manual save process
 func (m Model) saveActionFile() (Model, tea.Cmd) {
 	if !m.hasUnsavedChanges {
 		m.saveMessage = "No changes to save"
 		return m, nil
 	}
 
-	// Generate action file with current actions
-	filename := fmt.Sprintf("dovetail_actions_%s.txt",
-		time.Now().Format("20060102_150405"))
+	// Generate action file with current actions (use sessionID to match patch files)
+	filename := fmt.Sprintf("dovetail_actions_%s.txt", m.sessionID)
+	successMessage := fmt.Sprintf("✅ Saved to %s", filename)
 
-	if err := m.writeActionFile(filename); err != nil {
-		m.saveMessage = fmt.Sprintf("Error saving: %v", err)
-	} else {
-		m.saveMessage = fmt.Sprintf("✅ Saved to %s", filename)
-		m.hasUnsavedChanges = false  // Changes are now saved
-		m.hasUnappliedChanges = true // Ready to execute
-	}
-
-	return m, nil
+	updatedModel, _ := m.saveActionFileWithState(filename, successMessage)
+	return updatedModel, nil
 }
 
 // writeActionFile writes the current actions to a file
@@ -2153,69 +2213,100 @@ func copyFile(src, dst string) error {
 
 // runDryRun executes dry-run command in external process with pager
 func (m Model) runDryRun() (Model, tea.Cmd) {
-	// Save action file first
+	// Save action file first using consolidated function
 	filename := fmt.Sprintf("dovetail_actions_%s.txt", m.sessionID)
-	if err := m.writeActionFile(filename); err != nil {
-		m.saveMessage = fmt.Sprintf("Error saving action file: %v", err)
-		return m, nil
+	util.LogInfo("=== TUI DRY RUN INVOCATION ===")
+	util.LogInfo("Action file: %q", filename)
+
+	updatedModel, err := m.saveActionFileWithState(filename, "Launching dry-run...")
+	if err != nil {
+		util.LogInfo("ERROR: Failed to write action file: %v", err)
+		return updatedModel, nil
 	}
+	util.LogInfo("Action file written successfully")
+	m = updatedModel
 
 	// Get executable path
 	executable, err := os.Executable()
 	if err != nil {
+		util.LogInfo("ERROR: Failed to get executable path: %v", err)
 		m.saveMessage = fmt.Sprintf("Error finding executable: %v", err)
 		return m, nil
 	}
+	util.LogInfo("Executable path: %q", executable)
+	util.LogInfo("Left directory: %q", m.leftDir)
+	util.LogInfo("Right directory: %q", m.rightDir)
+
+	// Construct full command with required directories
+	fullCommand := fmt.Sprintf("%s dry %s %s %s | less", executable, filename, m.leftDir, m.rightDir)
+	util.LogInfo("Full command to execute: %q", fullCommand)
+	util.LogInfo("Shell command: [/bin/sh, -c, %q]", fullCommand)
 
 	// Run dry-run with pager
 	cmd := tea.ExecProcess(
 		&exec.Cmd{
 			Path: "/bin/sh",
-			Args: []string{"/bin/sh", "-c", fmt.Sprintf("%s dry %s | less", executable, filename)},
+			Args: []string{"/bin/sh", "-c", fullCommand},
 		},
 		func(err error) tea.Msg {
 			if err != nil {
+				util.LogInfo("DRY RUN COMPLETED WITH ERROR: %v", err)
 				return dryRunCompletedMsg{success: false, error: err}
 			}
+			util.LogInfo("DRY RUN COMPLETED SUCCESSFULLY")
 			return dryRunCompletedMsg{success: true, error: nil}
 		},
 	)
 
-	m.saveMessage = "Launching dry-run..."
 	return m, cmd
 }
 
 // runApply executes apply command in external process
 func (m Model) runApply() (Model, tea.Cmd) {
-	// Save action file first
+	// Save action file first using consolidated function
 	filename := fmt.Sprintf("dovetail_actions_%s.txt", m.sessionID)
-	if err := m.writeActionFile(filename); err != nil {
-		m.saveMessage = fmt.Sprintf("Error saving action file: %v", err)
-		return m, nil
+	util.LogInfo("=== TUI APPLY INVOCATION ===")
+	util.LogInfo("Action file: %q", filename)
+
+	updatedModel, err := m.saveActionFileWithState(filename, "Launching apply...")
+	if err != nil {
+		util.LogInfo("ERROR: Failed to write action file: %v", err)
+		return updatedModel, nil
 	}
+	util.LogInfo("Action file written successfully")
+	m = updatedModel
 
 	// Get executable path
 	executable, err := os.Executable()
 	if err != nil {
+		util.LogInfo("ERROR: Failed to get executable path: %v", err)
 		m.saveMessage = fmt.Sprintf("Error finding executable: %v", err)
 		return m, nil
 	}
+	util.LogInfo("Executable path: %q", executable)
+	util.LogInfo("Left directory: %q", m.leftDir)
+	util.LogInfo("Right directory: %q", m.rightDir)
+
+	// Construct command arguments with required directories
+	args := []string{executable, "apply", filename, m.leftDir, m.rightDir}
+	util.LogInfo("Command args: %v", args)
 
 	// Run apply command
 	cmd := tea.ExecProcess(
 		&exec.Cmd{
 			Path: executable,
-			Args: []string{executable, "apply", filename},
+			Args: args,
 		},
 		func(err error) tea.Msg {
 			if err != nil {
+				util.LogInfo("APPLY COMPLETED WITH ERROR: %v", err)
 				return applyCompletedMsg{success: false, error: err, filename: filename}
 			}
+			util.LogInfo("APPLY COMPLETED SUCCESSFULLY")
 			return applyCompletedMsg{success: true, error: nil, filename: filename}
 		},
 	)
 
-	m.saveMessage = "Launching apply..."
 	return m, cmd
 }
 
