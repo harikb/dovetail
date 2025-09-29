@@ -248,14 +248,21 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchInput(msg)
 	}
 
-	switch msg.String() {
-	case "ctrl+c":
-		// Call profiling cleanup before quitting
+	// Handle Ctrl+C - always quit immediately
+	if msg.String() == "ctrl+c" {
 		if cleanup := getProfilingCleanup(); cleanup != nil {
 			cleanup()
 		}
 		return m, tea.Quit
+	}
 
+	// Handle modal dialogs first - they should block all other input
+	if m.isModalActive() {
+		return m.handleModalKeys(msg.String())
+	}
+
+	// Handle main application keys
+	switch msg.String() {
 	case "q":
 		if m.showingDiff {
 			// In diff view, q goes back to file list (same as esc)
@@ -293,19 +300,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
-		if m.showingDiscardConfirm {
-			// Cancel discard confirmation
-			return m.handleDiscardConfirm(false)
-		} else if m.showingCleanup {
-			// Cancel cleanup confirmation
-			return m.handleCleanupConfirm(false)
-		} else if m.showingPatchCleanup {
-			// Cancel patch cleanup confirmation
-			return m.handlePatchCleanupConfirm(false)
-		} else if m.showingQuitConfirm {
-			// Cancel quit confirmation
-			return m.handleQuitConfirm(false)
-		} else if m.hunkMode {
+		if m.hunkMode {
 			util.DebugPrintf("ESC pressed in hunk mode - calling exitHunkMode()")
 			// Exit hunk mode, save patches if any changes made
 			return m.exitHunkMode()
@@ -326,22 +321,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Note: ESC no longer quits app in normal mode - too dangerous
 
 	case "y":
-		// Handle discard confirmation
-		if m.showingDiscardConfirm {
-			return m.handleDiscardConfirm(true)
-		}
-		// Handle cleanup confirmation
-		if m.showingCleanup {
-			return m.handleCleanupConfirm(true)
-		}
-		// Handle patch cleanup confirmation
-		if m.showingPatchCleanup {
-			return m.handlePatchCleanupConfirm(true)
-		}
-		// Handle quit confirmation
-		if m.showingQuitConfirm {
-			return m.handleQuitConfirm(true)
-		}
+		// Modal y/n handling moved to handleModalKeys()
 
 	case "up", "k":
 		if m.showingDiff {
@@ -375,7 +355,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter", "space", " ":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
+		if !m.showingDiff && len(m.results) > 0 {
 			// Load diff for selected file - reset revert mode for new file
 			m.reversedDiff = false
 			m.saveMessage = "" // Clear any revert mode messages
@@ -439,7 +419,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Interactive action keys - file list view or hunk mode
 	case ">":
 		// Only available in file list mode for whole-file copy operations
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
+		if !m.showingDiff && len(m.results) > 0 {
 			util.DebugPrintf("Setting file action COPY-TO-RIGHT")
 			return m.setAction(action.ActionCopyToRight), nil
 		}
@@ -448,12 +428,12 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			util.DebugPrintf("Applying visible hunk (<) - currentHunk=%d", m.currentHunk)
 			// Apply current hunk as displayed (user controls direction with 'r')
 			return m.applyCurrentHunk()
-		} else if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && len(m.results) > 0 {
+		} else if !m.showingDiff && len(m.results) > 0 {
 			util.DebugPrintf("Setting file action COPY-TO-LEFT")
 			return m.setAction(action.ActionCopyToLeft), nil
 		}
 	case "i":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
+		if !m.showingDiff && len(m.results) > 0 {
 			result := m.results[m.cursor]
 			currentAction := m.fileActions[result.RelativePath]
 
@@ -468,7 +448,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "x":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && len(m.results) > 0 {
+		if !m.showingDiff && len(m.results) > 0 {
 			// Use simplified delete - only valid for files that exist on one side only
 			result := m.results[m.cursor]
 			var deleteAction action.ActionType
@@ -486,38 +466,27 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.setAction(deleteAction), nil
 		}
 	case "s":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm {
+		if !m.showingDiff {
 			return m.saveActionFile()
 		}
 	case "d":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && m.hasUnappliedChanges {
+		if !m.showingDiff && m.hasUnappliedChanges {
 			return m.runDryRun()
 		}
 	case "a":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm && m.hasUnappliedChanges {
+		if !m.showingDiff && m.hasUnappliedChanges {
 			return m.runApply()
 		}
 
 	// Search functionality
 	case "/":
-		if !m.showingDiff && !m.showingSave && !m.showingDiscardConfirm && !m.showingCleanup && !m.showingPatchCleanup && !m.showingQuitConfirm {
+		if !m.showingDiff {
 			m.searchMode = true
 			m.searchString = ""
 		}
 	case "n":
-		if m.showingDiscardConfirm {
-			// Handle discard confirmation (no)
-			return m.handleDiscardConfirm(false)
-		} else if m.showingCleanup {
-			// Handle cleanup confirmation (no)
-			return m.handleCleanupConfirm(false)
-		} else if m.showingPatchCleanup {
-			// Handle patch cleanup confirmation (no)
-			return m.handlePatchCleanupConfirm(false)
-		} else if m.showingQuitConfirm {
-			// Handle quit confirmation (no)
-			return m.handleQuitConfirm(false)
-		} else if m.hunkMode && len(m.hunks) > 0 {
+		// Modal y/n handling moved to handleModalKeys()
+		if m.hunkMode && len(m.hunks) > 0 {
 			// Next hunk in hunk mode
 			if m.currentHunk < len(m.hunks)-1 {
 				m.currentHunk++
@@ -698,10 +667,208 @@ func (m Model) loadDiff() tea.Cmd {
 
 // View renders the current state of the UI
 func (m Model) View() string {
+	// Get the main content first
+	var mainContent string
 	if m.showingDiff {
-		return m.viewDiff()
+		mainContent = m.viewDiff()
+	} else {
+		mainContent = m.viewFileList()
 	}
-	return m.viewFileList()
+
+	// Check if any modal dialog is active
+	if modalContent := m.renderActiveModal(); modalContent != "" {
+		// Overlay the modal on top of the main content
+		return m.overlayModal(mainContent, modalContent)
+	}
+
+	return mainContent
+}
+
+// isModalActive returns true if any modal dialog is currently showing
+func (m Model) isModalActive() bool {
+	return m.showingDiscardConfirm || m.showingCleanup || m.showingPatchCleanup || m.showingQuitConfirm
+}
+
+// renderActiveModal returns the content for the currently active modal, or empty string if none
+func (m Model) renderActiveModal() string {
+	if m.showingDiscardConfirm {
+		return m.renderDiscardModal()
+	}
+	if m.showingCleanup {
+		return m.renderCleanupModal()
+	}
+	if m.showingPatchCleanup {
+		return m.renderPatchCleanupModal()
+	}
+	if m.showingQuitConfirm {
+		return m.renderQuitModal()
+	}
+	return ""
+}
+
+// overlayModal renders the modal content overlaid on top of the main content
+func (m Model) overlayModal(mainContent, modalContent string) string {
+	// Get terminal dimensions
+	termWidth, termHeight := m.getTerminalSize()
+
+	// Split main content into lines
+	mainLines := strings.Split(mainContent, "\n")
+
+	// Split modal content into lines and get dimensions
+	modalLines := strings.Split(modalContent, "\n")
+	modalHeight := len(modalLines)
+	modalWidth := 0
+	for _, line := range modalLines {
+		if w := lipgloss.Width(line); w > modalWidth {
+			modalWidth = w
+		}
+	}
+
+	// Calculate modal position (centered)
+	startRow := (termHeight - modalHeight) / 2
+	if startRow < 0 {
+		startRow = 0
+	}
+
+	// Create result with main content as base
+	result := make([]string, termHeight)
+	for i := 0; i < termHeight; i++ {
+		if i < len(mainLines) {
+			result[i] = mainLines[i]
+		} else {
+			result[i] = ""
+		}
+	}
+
+	// Overlay the modal content
+	for i, modalLine := range modalLines {
+		rowIndex := startRow + i
+		if rowIndex < termHeight {
+			// Center the modal line horizontally
+			leftPadding := (termWidth - modalWidth) / 2
+			if leftPadding < 0 {
+				leftPadding = 0
+			}
+
+			// Replace the main content line with modal content
+			result[rowIndex] = strings.Repeat(" ", leftPadding) + modalLine
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// getTerminalSize returns the current terminal dimensions
+func (m Model) getTerminalSize() (int, int) {
+	// Default fallback dimensions
+	width, height := 80, 24
+
+	// Try to get actual terminal size (Bubble Tea should provide this)
+	if m.windowWidth > 0 && m.windowHeight > 0 {
+		width = m.windowWidth
+		height = m.windowHeight
+	}
+
+	return width, height
+}
+
+// renderDiscardModal renders the discard confirmation modal
+func (m Model) renderDiscardModal() string {
+	confirmStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("11")).
+		Background(lipgloss.Color("0")).
+		Padding(1).
+		Margin(1)
+
+	confirmText := fmt.Sprintf("Discard staged changes for %s?\n\nThis will delete any patch files for this file in the current session.\nThis action cannot be undone.\n\n[y] Yes, discard  [n] No, cancel", m.discardFilePath)
+	return confirmStyle.Render(confirmText)
+}
+
+// renderCleanupModal renders the cleanup confirmation modal
+func (m Model) renderCleanupModal() string {
+	confirmStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("10")). // Green border for positive action
+		Background(lipgloss.Color("0")).
+		Padding(1).
+		Margin(1)
+
+	confirmText := fmt.Sprintf("Clean up old files?\n\nApply completed successfully! Clean up:\n• Action file: %s\n• All patch files from session: %s\n• All other dovetail temporary files\n\nThis will help keep your directories clean.\n\n[y] Yes, clean up  [n] No, keep files", m.cleanupActionFile, m.cleanupOldSessionID)
+	return confirmStyle.Render(confirmText)
+}
+
+// renderPatchCleanupModal renders the patch cleanup confirmation modal
+func (m Model) renderPatchCleanupModal() string {
+	confirmStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("11")). // Yellow border for attention
+		Background(lipgloss.Color("0")).
+		Padding(1).
+		Margin(1)
+
+	// Count patch files by directory
+	leftCount, rightCount := 0, 0
+	for _, pf := range m.detectedPatchFiles {
+		if pf.Side == "left" {
+			leftCount++
+		} else {
+			rightCount++
+		}
+	}
+
+	confirmText := fmt.Sprintf("Clean up patch files from previous runs?\n\nFound %d patch files:\n• Left directory: %d files\n• Right directory: %d files\n\nThese are leftover .patch files from previous dovetail hunk operations.\nThey are safe to remove.\n\n[y] Yes, clean up  [n] No, keep files", len(m.detectedPatchFiles), leftCount, rightCount)
+	return confirmStyle.Render(confirmText)
+}
+
+// renderQuitModal renders the quit confirmation modal
+func (m Model) renderQuitModal() string {
+	confirmStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("9")). // Red border for warning
+		Background(lipgloss.Color("0")).
+		Padding(1).
+		Margin(1)
+
+	confirmText := "Quit with unsaved changes?\n\nYou have unsaved changes that will be lost if you quit now.\nConsider saving first (press 's') to preserve your work.\n\n[y] Yes, quit anyway  [n] No, go back"
+	return confirmStyle.Render(confirmText)
+}
+
+// handleModalKeys handles key input when a modal dialog is active
+func (m Model) handleModalKeys(key string) (Model, tea.Cmd) {
+	var model tea.Model
+	var cmd tea.Cmd
+
+	switch key {
+	case "y":
+		if m.showingDiscardConfirm {
+			model, cmd = m.handleDiscardConfirm(true)
+		} else if m.showingCleanup {
+			model, cmd = m.handleCleanupConfirm(true)
+		} else if m.showingPatchCleanup {
+			model, cmd = m.handlePatchCleanupConfirm(true)
+		} else if m.showingQuitConfirm {
+			model, cmd = m.handleQuitConfirm(true)
+		}
+	case "n", "esc":
+		if m.showingDiscardConfirm {
+			model, cmd = m.handleDiscardConfirm(false)
+		} else if m.showingCleanup {
+			model, cmd = m.handleCleanupConfirm(false)
+		} else if m.showingPatchCleanup {
+			model, cmd = m.handlePatchCleanupConfirm(false)
+		} else if m.showingQuitConfirm {
+			model, cmd = m.handleQuitConfirm(false)
+		}
+	}
+
+	// If we handled a modal key, return the result with type assertion
+	if model != nil {
+		return model.(Model), cmd
+	}
+
+	// All other keys are ignored when modal is active
+	return m, nil
 }
 
 // viewFileList renders the file list view
@@ -779,17 +946,24 @@ func (m Model) viewFileList() string {
 				actionStr = "p"
 			}
 
+			// Format metadata columns
+			metadataStr := fmt.Sprintf("%s %s %s",
+				result.ComparisonMethod.String(),
+				result.SizeComparison.String(),
+				result.TimeComparison.String())
+
 			var line string
 			if i == m.cursor {
 				// Highlight selected line
 				selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("8")).Foreground(lipgloss.Color("15"))
-				line = selectedStyle.Render(fmt.Sprintf("▶ [%s] %-12s %s",
-					actionStr, result.Status.String(), filePath))
+				line = selectedStyle.Render(fmt.Sprintf("▶ [%s] %-14s %s  %s",
+					actionStr, result.Status.String(), metadataStr, filePath))
 			} else {
 				// Color the action and status separately
 				actionPart := actionStyle.Render(fmt.Sprintf("  [%s]", actionStr))
-				statusPart := statusStyle.Render(fmt.Sprintf(" %-12s", result.Status.String()))
-				line = actionPart + statusPart + " " + filePath
+				statusPart := statusStyle.Render(fmt.Sprintf(" %-14s", result.Status.String()))
+				metadataPart := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).Render(fmt.Sprintf(" %s ", metadataStr)) // Bright cyan, bold
+				line = actionPart + statusPart + metadataPart + " " + filePath
 			}
 
 			b.WriteString(line)
@@ -840,67 +1014,7 @@ func (m Model) viewFileList() string {
 		b.WriteString(readyStyle.Render("● Ready to execute"))
 	}
 
-	// Show discard confirmation dialog
-	if m.showingDiscardConfirm {
-		b.WriteString("\n\n")
-		confirmStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("11")).
-			Padding(1).
-			Margin(1)
-
-		confirmText := fmt.Sprintf("Discard staged changes for %s?\n\nThis will delete any patch files for this file in the current session.\nThis action cannot be undone.\n\n[y] Yes, discard  [n] No, cancel", m.discardFilePath)
-		b.WriteString(confirmStyle.Render(confirmText))
-	}
-
-	// Show cleanup confirmation dialog
-	if m.showingCleanup {
-		b.WriteString("\n\n")
-		confirmStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("10")). // Green border for positive action
-			Padding(1).
-			Margin(1)
-
-		confirmText := fmt.Sprintf("Clean up old files?\n\nApply completed successfully! Clean up:\n• Action file: %s\n• All patch files from session: %s\n• All other dovetail temporary files\n\nThis will help keep your directories clean.\n\n[y] Yes, clean up  [n] No, keep files", m.cleanupActionFile, m.cleanupOldSessionID)
-		b.WriteString(confirmStyle.Render(confirmText))
-	}
-
-	// Show patch cleanup confirmation dialog
-	if m.showingPatchCleanup {
-		b.WriteString("\n\n")
-		confirmStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("11")). // Yellow border for attention
-			Padding(1).
-			Margin(1)
-
-		// Count patch files by directory
-		leftCount, rightCount := 0, 0
-		for _, pf := range m.detectedPatchFiles {
-			if pf.Side == "left" {
-				leftCount++
-			} else {
-				rightCount++
-			}
-		}
-
-		confirmText := fmt.Sprintf("Clean up patch files from previous runs?\n\nFound %d patch files:\n• Left directory: %d files\n• Right directory: %d files\n\nThese are leftover .patch files from previous dovetail hunk operations.\nThey are safe to remove.\n\n[y] Yes, clean up  [n] No, keep files", len(m.detectedPatchFiles), leftCount, rightCount)
-		b.WriteString(confirmStyle.Render(confirmText))
-	}
-
-	// Show quit confirmation dialog
-	if m.showingQuitConfirm {
-		b.WriteString("\n\n")
-		confirmStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("9")). // Red border for warning
-			Padding(1).
-			Margin(1)
-
-		confirmText := "Quit with unsaved changes?\n\nYou have unsaved changes that will be lost if you quit now.\nConsider saving first (press 's') to preserve your work.\n\n[y] Yes, quit anyway  [n] No, go back"
-		b.WriteString(confirmStyle.Render(confirmText))
-	}
+	// Modal dialogs are now handled separately via overlay system
 
 	return b.String()
 }

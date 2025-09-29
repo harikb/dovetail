@@ -252,29 +252,71 @@ func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo) (Com
 		RightInfo:    rightInfo,
 	}
 
-	// Determine status
+	// Determine status and metadata
 	if leftInfo == nil && rightInfo == nil {
 		return result, fmt.Errorf("both files are nil for path: %s", relPath)
 	} else if leftInfo == nil {
 		result.Status = StatusOnlyRight
+		result.SizeComparison = SizeNotApplicable
+		result.TimeComparison = TimeNotApplicable
+		result.ComparisonMethod = ComparisonExistence // File exists on right side only
 	} else if rightInfo == nil {
 		result.Status = StatusOnlyLeft
+		result.SizeComparison = SizeNotApplicable
+		result.TimeComparison = TimeNotApplicable
+		result.ComparisonMethod = ComparisonExistence // File exists on left side only
 	} else {
-		// Both exist, compare them
+		// Both exist, compare them and calculate metadata
+		
+		// Calculate size comparison for files
+		if !leftInfo.IsDir && !rightInfo.IsDir {
+			if leftInfo.Size == rightInfo.Size {
+				result.SizeComparison = SizeEqual
+			} else if leftInfo.Size < rightInfo.Size {
+				result.SizeComparison = SizeLeftSmaller
+			} else {
+				result.SizeComparison = SizeLeftBigger
+			}
+		} else {
+			result.SizeComparison = SizeNotApplicable // Directories
+		}
+		
+		// Calculate time comparison
+		if leftInfo.ModTime.Equal(rightInfo.ModTime) {
+			result.TimeComparison = TimeEqual
+		} else if leftInfo.ModTime.Before(rightInfo.ModTime) {
+			result.TimeComparison = TimeLeftOlder
+		} else {
+			result.TimeComparison = TimeLeftNewer
+		}
+
+		// Determine comparison method and status
 		if leftInfo.IsDir && rightInfo.IsDir {
 			// Both are directories - they're identical as directories
 			result.Status = StatusIdentical
+			result.ComparisonMethod = ComparisonHash // Directory comparison
 		} else if leftInfo.IsDir != rightInfo.IsDir {
 			// One is directory, one is file - they're different
 			result.Status = StatusModified
+			result.ComparisonMethod = ComparisonHash // Type mismatch
 		} else {
 			// Both are files - compare content
-			// Optimization: if file sizes differ, skip hash comparison
-			if leftInfo.Size != rightInfo.Size {
+			hasHashError := leftInfo.Hash == "ERROR_CALCULATING_HASH" || rightInfo.Hash == "ERROR_CALCULATING_HASH"
+			
+			if hasHashError {
+				result.ComparisonMethod = ComparisonError
+				result.Status = StatusModified // Assume different when hash failed
+			} else if leftInfo.Size != rightInfo.Size {
+				// Size-only comparison (optimization: different sizes = different files)
+				result.ComparisonMethod = ComparisonSize
 				result.Status = StatusModified
-			} else if leftInfo.Hash == rightInfo.Hash && leftInfo.Hash != "ERROR_CALCULATING_HASH" {
+			} else if leftInfo.Hash == rightInfo.Hash {
+				// Hash comparison: identical
+				result.ComparisonMethod = ComparisonHash
 				result.Status = StatusIdentical
 			} else {
+				// Hash comparison: different
+				result.ComparisonMethod = ComparisonHash
 				result.Status = StatusModified
 			}
 		}

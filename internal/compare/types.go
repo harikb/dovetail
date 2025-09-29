@@ -39,12 +39,90 @@ type FileInfo struct {
 	Permissions string    // File permissions (for display/debugging)
 }
 
+// ComparisonMethod represents how the comparison was performed
+type ComparisonMethod int
+
+const (
+	ComparisonHash ComparisonMethod = iota // Full hash comparison
+	ComparisonSize                         // Size-only comparison  
+	ComparisonError                        // Error during comparison
+	ComparisonExistence                    // File exists on one side only (no content comparison)
+)
+
+func (cm ComparisonMethod) String() string {
+	switch cm {
+	case ComparisonHash:
+		return "H"
+	case ComparisonSize:
+		return "S"
+	case ComparisonError:
+		return "E"
+	case ComparisonExistence:
+		return "-"
+	default:
+		return "?"
+	}
+}
+
+// SizeComparison represents relative file sizes
+type SizeComparison int
+
+const (
+	SizeEqual SizeComparison = iota // Files are same size
+	SizeLeftSmaller                 // Left file is smaller
+	SizeLeftBigger                  // Left file is bigger
+	SizeNotApplicable               // File exists on one side only
+)
+
+func (sc SizeComparison) String() string {
+	switch sc {
+	case SizeEqual:
+		return "L=R"
+	case SizeLeftSmaller:
+		return "L<R"
+	case SizeLeftBigger:
+		return "L>R"
+	case SizeNotApplicable:
+		return "---"
+	default:
+		return "???"
+	}
+}
+
+// TimeComparison represents relative modification times
+type TimeComparison int
+
+const (
+	TimeEqual TimeComparison = iota // Files have same modification time
+	TimeLeftOlder                   // Left file is older
+	TimeLeftNewer                   // Left file is newer
+	TimeNotApplicable               // File exists on one side only
+)
+
+func (tc TimeComparison) String() string {
+	switch tc {
+	case TimeEqual:
+		return "T="
+	case TimeLeftOlder:
+		return "T<"
+	case TimeLeftNewer:
+		return "T>"
+	case TimeNotApplicable:
+		return "--"
+	default:
+		return "??"
+	}
+}
+
 // ComparisonResult represents the result of comparing a single file/directory
 type ComparisonResult struct {
-	RelativePath string     // Path relative to comparison root
-	Status       FileStatus // Comparison status
-	LeftInfo     *FileInfo  // Info from left directory (nil if not present)
-	RightInfo    *FileInfo  // Info from right directory (nil if not present)
+	RelativePath      string           // Path relative to comparison root
+	Status            FileStatus       // Comparison status
+	LeftInfo          *FileInfo        // Info from left directory (nil if not present)
+	RightInfo         *FileInfo        // Info from right directory (nil if not present)
+	ComparisonMethod  ComparisonMethod // How the comparison was performed
+	SizeComparison    SizeComparison   // Relative file sizes
+	TimeComparison    TimeComparison   // Relative modification times
 }
 
 // ComparisonOptions contains options for directory comparison

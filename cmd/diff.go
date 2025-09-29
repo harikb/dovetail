@@ -60,7 +60,7 @@ func init() {
 	diffCmd.Flags().StringVarP(&diffRightDir, "right", "r", "", "right directory path (use either flags or positional args)")
 
 	// Output options
-	diffCmd.Flags().StringVarP(&outputFile, "output", "o", "", "output action file path (required unless --show-diff)")
+	diffCmd.Flags().StringVarP(&outputFile, "output", "o", "", "output action file path (default: stdout)")
 	diffCmd.Flags().BoolVar(&includeIdentical, "include-identical", false, "include identical files in action file (default: only show different files)")
 
 	// Display options
@@ -120,10 +120,8 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve right directory path: %w", err)
 	}
 
-	// Validate output requirements
-	if !showDiff && showDiffFile == "" && outputFile == "" {
-		return fmt.Errorf("output file (-o) is required when not using --show-diff or --show-diff-file")
-	}
+	// Validate output requirements  
+	// Note: outputFile is now optional and defaults to stdout
 	if showDiff && showDiffFile != "" {
 		return fmt.Errorf("cannot use both --show-diff and --show-diff-file")
 	}
@@ -167,19 +165,27 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	cfg.Exclusions.Extensions = append(cfg.Exclusions.Extensions, "patch")
 
 	if cfg.General.Verbose >= 1 {
-		fmt.Printf("Comparing directories:\n")
-		fmt.Printf("  Left:  %s\n", leftDir)
-		fmt.Printf("  Right: %s\n", rightDir)
+		// Verbose output goes to stderr when outputting action file to stdout
+		var output *os.File
+		if outputFile == "" {
+			output = os.Stderr
+		} else {
+			output = os.Stdout
+		}
+		
+		fmt.Fprintf(output, "Comparing directories:\n")
+		fmt.Fprintf(output, "  Left:  %s\n", leftDir)
+		fmt.Fprintf(output, "  Right: %s\n", rightDir)
 		if len(cfg.Exclusions.Names) > 0 {
-			fmt.Printf("  Excluding names: %s\n", strings.Join(cfg.Exclusions.Names, ", "))
+			fmt.Fprintf(output, "  Excluding names: %s\n", strings.Join(cfg.Exclusions.Names, ", "))
 		}
 		if len(cfg.Exclusions.Paths) > 0 {
-			fmt.Printf("  Excluding paths: %s\n", strings.Join(cfg.Exclusions.Paths, ", "))
+			fmt.Fprintf(output, "  Excluding paths: %s\n", strings.Join(cfg.Exclusions.Paths, ", "))
 		}
 		if len(cfg.Exclusions.Extensions) > 0 {
-			fmt.Printf("  Excluding extensions: %s\n", strings.Join(cfg.Exclusions.Extensions, ", "))
+			fmt.Fprintf(output, "  Excluding extensions: %s\n", strings.Join(cfg.Exclusions.Extensions, ", "))
 		}
-		fmt.Println()
+		fmt.Fprintln(output)
 	}
 
 	// Create comparison options from config
@@ -204,16 +210,24 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	}
 
 	if cfg.General.Verbose >= 1 {
-		fmt.Printf("Comparison completed:\n")
-		fmt.Printf("  Files - Total: %d, Identical: %d, Modified: %d, Left only: %d, Right only: %d\n",
+		// Verbose output goes to stderr when outputting action file to stdout
+		var output *os.File
+		if outputFile == "" {
+			output = os.Stderr
+		} else {
+			output = os.Stdout
+		}
+		
+		fmt.Fprintf(output, "Comparison completed:\n")
+		fmt.Fprintf(output, "  Files - Total: %d, Identical: %d, Modified: %d, Left only: %d, Right only: %d\n",
 			summary.TotalFiles, summary.IdenticalFiles, summary.ModifiedFiles,
 			summary.OnlyLeftFiles, summary.OnlyRightFiles)
-		fmt.Printf("  Directories - Total: %d, Identical: %d, Left only: %d, Right only: %d\n",
+		fmt.Fprintf(output, "  Directories - Total: %d, Identical: %d, Left only: %d, Right only: %d\n",
 			summary.TotalDirs, summary.IdenticalDirs, summary.OnlyLeftDirs, summary.OnlyRightDirs)
 		if len(summary.ErrorsEncountered) > 0 {
-			fmt.Printf("  Errors encountered: %d\n", len(summary.ErrorsEncountered))
+			fmt.Fprintf(output, "  Errors encountered: %d\n", len(summary.ErrorsEncountered))
 		}
-		fmt.Println()
+		fmt.Fprintln(output)
 	}
 
 	if showDiff {
@@ -223,27 +237,48 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		// Display diff for single specific file
 		return showSingleFileDiff(results, leftDir, rightDir, showDiffFile, cfg.General.NoColor, ignoreWhitespace)
 	} else {
-		// Generate action file
-		outputFile, err := filepath.Abs(outputFile)
-		if err != nil {
-			return fmt.Errorf("failed to resolve output file path: %w", err)
-		}
+		// Generate action file (to file or stdout)
+		var file *os.File
+		var outputPath string
+		
+		if outputFile == "" {
+			// Output to stdout
+			file = os.Stdout
+			outputPath = "stdout"
+		} else {
+			// Output to specified file
+			var err error
+			outputPath, err = filepath.Abs(outputFile)
+			if err != nil {
+				return fmt.Errorf("failed to resolve output file path: %w", err)
+			}
 
-		file, err := os.Create(outputFile)
-		if err != nil {
-			return fmt.Errorf("failed to create output file: %w", err)
+			file, err = os.Create(outputPath)
+			if err != nil {
+				return fmt.Errorf("failed to create output file: %w", err)
+			}
+			defer file.Close()
 		}
-		defer file.Close()
 
 		generator := action.NewGenerator(rootCmd.Version)
 		if err := generator.GenerateActionFile(file, results, leftDir, rightDir, summary, includeIdentical); err != nil {
 			return fmt.Errorf("failed to generate action file: %w", err)
 		}
 
-		fmt.Printf("Action file generated: %s\n", outputFile)
-		fmt.Printf("Edit this file to specify the actions you want to take, then run:\n")
-		fmt.Printf("  dovetail dry %s %s %s  # to preview actions\n", outputFile, leftDir, rightDir)
-		fmt.Printf("  dovetail apply %s %s %s    # to execute actions\n", outputFile, leftDir, rightDir)
+		// Progress messages go to stderr when outputting to stdout, otherwise to stdout
+		if outputFile == "" {
+			// When outputting to stdout, send progress to stderr
+			fmt.Fprintf(os.Stderr, "Action file generated to stdout\n")
+			fmt.Fprintf(os.Stderr, "Save the output and run:\n")
+			fmt.Fprintf(os.Stderr, "  dovetail dry <ACTION_FILE> %s %s  # to preview actions\n", leftDir, rightDir)
+			fmt.Fprintf(os.Stderr, "  dovetail apply <ACTION_FILE> %s %s    # to execute actions\n", leftDir, rightDir)
+		} else {
+			// When outputting to file, send progress to stdout as before
+			fmt.Printf("Action file generated: %s\n", outputPath)
+			fmt.Printf("Edit this file to specify the actions you want to take, then run:\n")
+			fmt.Printf("  dovetail dry %s %s %s  # to preview actions\n", outputPath, leftDir, rightDir)
+			fmt.Printf("  dovetail apply %s %s %s    # to execute actions\n", outputPath, leftDir, rightDir)
+		}
 
 		return nil
 	}
