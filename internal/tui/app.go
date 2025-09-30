@@ -187,13 +187,6 @@ type Model struct {
 	showingPatchCleanup bool                    // Whether patch cleanup confirmation is shown
 	detectedPatchFiles  []compare.PatchFileInfo // Patch files detected during scan
 
-	// Progress dialog state
-	showingProgress     bool   // Whether progress dialog is shown
-	progressCurrentFile string // Current file being processed
-	progressProcessed   int    // Number of files processed
-	progressTotal       int    // Total number of files to process
-	progressPhase       string // Current phase: "scanning_left", "scanning_right", "comparing"
-	progressCancelled   bool   // Whether user cancelled the operation
 }
 
 // Init initializes the model (required by bubbletea)
@@ -249,47 +242,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case comparisonProgressMsg:
-		// Update progress dialog
-		m.progressCurrentFile = msg.currentFile
-		m.progressProcessed = msg.processed
-		m.progressTotal = msg.total
-		m.progressPhase = msg.phase
-		return m, nil
-
-	case comparisonCancelledMsg:
-		// User cancelled the comparison
-		m.progressCancelled = true
-		m.showingProgress = false
-		m.saveMessage = "Comparison cancelled"
-		return m, nil
-
-	case comparisonCompletedMsg:
-		// Comparison completed
-		m.showingProgress = false
-
-		if msg.success {
-			// Update model with fresh results
-			m.results = msg.results
-			m.summary = msg.summary
-
-			// Initialize actions for new results (all ignore by default)
-			m.fileActions = make(map[string]action.ActionType)
-			for _, result := range m.results {
-				m.fileActions[result.RelativePath] = action.ActionIgnore
-			}
-
-			// Set up cleanup prompt
-			m.showingCleanup = true
-			m.cleanupOldSessionID = m.sessionID // Use current session ID for cleanup
-			m.cleanupActionFile = "dovetail_actions_" + m.sessionID + ".txt"
-
-			util.DebugPrintf("Fresh comparison complete. Found %d different files", len(msg.results))
-			m.saveMessage = "Apply succeeded! Clean up old action and patch files?"
-		} else {
-			m.saveMessage = fmt.Sprintf("Error refreshing comparison: %v", msg.error)
-		}
-		return m, nil
 	}
 
 	return m, nil
@@ -740,7 +692,7 @@ func (m Model) View() string {
 
 // isModalActive returns true if any modal dialog is currently showing
 func (m Model) isModalActive() bool {
-	return m.showingDiscardConfirm || m.showingCleanup || m.showingPatchCleanup || m.showingQuitConfirm || m.showingProgress
+	return m.showingDiscardConfirm || m.showingCleanup || m.showingPatchCleanup || m.showingQuitConfirm
 }
 
 // renderActiveModal returns the content for the currently active modal, or empty string if none
@@ -756,9 +708,6 @@ func (m Model) renderActiveModal() string {
 	}
 	if m.showingQuitConfirm {
 		return m.renderQuitModal()
-	}
-	if m.showingProgress {
-		return m.renderProgressModal()
 	}
 	return ""
 }
@@ -891,52 +840,6 @@ func (m Model) renderQuitModal() string {
 	return confirmStyle.Render(confirmText)
 }
 
-// renderProgressModal renders the progress dialog
-func (m Model) renderProgressModal() string {
-	progressStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("12")). // Blue border
-		Background(lipgloss.Color("0")).
-		Padding(1).
-		Margin(1)
-
-	// Calculate progress percentage
-	percentage := 0
-	if m.progressTotal > 0 {
-		percentage = (m.progressProcessed * 100) / m.progressTotal
-	}
-
-	// Create progress bar
-	barWidth := 40
-	filledWidth := (percentage * barWidth) / 100
-	progressBar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
-
-	// Format current file (truncate if too long)
-	currentFile := m.progressCurrentFile
-	if len(currentFile) > 60 {
-		currentFile = "..." + currentFile[len(currentFile)-57:]
-	}
-
-	phaseText := m.progressPhase
-	switch m.progressPhase {
-	case "scanning_left":
-		phaseText = "Scanning left directory"
-	case "scanning_right":
-		phaseText = "Scanning right directory"
-	case "comparing":
-		phaseText = "Comparing files"
-	}
-
-	// Create animated indicator
-	indicators := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	indicator := indicators[(time.Now().UnixNano()/100000000)%int64(len(indicators))]
-
-	progressText := fmt.Sprintf("%s %s\n\nProgress: %d/%d files (%d%%)\n\n%s\n\nCurrent: %s\n\n[ESC] Cancel",
-		indicator, phaseText, m.progressProcessed, m.progressTotal, percentage, progressBar, currentFile)
-
-	return progressStyle.Render(progressText)
-}
-
 // handleModalKeys handles key input when a modal dialog is active
 func (m Model) handleModalKeys(key string) (Model, tea.Cmd) {
 	var model tea.Model
@@ -971,8 +874,8 @@ func (m Model) handleModalKeys(key string) (Model, tea.Cmd) {
 			model, cmd = m.handlePatchCleanupConfirm(false)
 		}
 	case "q":
-		// Allow 'q' to quit even when modal is active (except for quit confirmation and progress)
-		if !m.showingQuitConfirm && !m.showingProgress {
+		// Allow 'q' to quit even when modal is active (except for quit confirmation)
+		if !m.showingQuitConfirm {
 			if cleanup := getProfilingCleanup(); cleanup != nil {
 				cleanup()
 			}
@@ -980,9 +883,7 @@ func (m Model) handleModalKeys(key string) (Model, tea.Cmd) {
 		}
 	case "esc":
 		// Handle ESC for different modals
-		if m.showingProgress {
-			model, cmd = m.handleProgressCancel()
-		} else if m.showingDiscardConfirm {
+		if m.showingDiscardConfirm {
 			model, cmd = m.handleDiscardConfirm(false)
 		} else if m.showingCleanup {
 			model, cmd = m.handleCleanupConfirm(false)
@@ -1473,19 +1374,6 @@ func (m Model) handleQuitConfirm(confirm bool) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-// handleProgressCancel handles cancellation of the progress dialog
-func (m Model) handleProgressCancel() (Model, tea.Cmd) {
-	// Hide progress dialog and send cancellation message
-	m.showingProgress = false
-	m.progressCancelled = true
-	m.saveMessage = "Comparison cancelled"
-
-	// Send cancellation message to stop the comparison
-	return m, func() tea.Msg {
-		return comparisonCancelledMsg{}
-	}
 }
 
 func (m Model) setAction(newAction action.ActionType) Model {
@@ -2612,23 +2500,6 @@ type cleanupCompletedMsg struct {
 	error   error
 }
 
-// Progress dialog message types
-type comparisonProgressMsg struct {
-	currentFile string
-	processed   int
-	total       int
-	phase       string // "scanning_left", "scanning_right", "comparing"
-}
-
-type comparisonCancelledMsg struct{}
-
-type comparisonCompletedMsg struct {
-	success bool
-	error   error
-	results []compare.ComparisonResult
-	summary *compare.ComparisonSummary
-}
-
 // refreshAfterApply handles post-apply state reset and comparison refresh
 func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	util.DebugPrintf("=== refreshAfterApply ENTRY ===")
@@ -2655,62 +2526,35 @@ func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	m.appliedHunks = nil
 	m.cleanupTempFiles()
 
-	// Show progress dialog and start comparison
-	m.showingProgress = true
-	m.progressPhase = "comparing"
-	m.progressProcessed = 0
-	m.progressTotal = 0
-	m.progressCancelled = false
-	m.progressCurrentFile = "Starting comparison..."
+	// Run fresh comparison (like initial comparison, showing logs)
+	util.DebugPrintf("Running fresh comparison after apply...")
+	results, summary, err := m.performFreshComparison()
 
-	// Start comparison with progress updates and animation timer
-	return m, tea.Batch(
-		m.runComparisonWithProgress(),
-		// Refresh progress dialog every 200ms for animation
-		tea.Tick(time.Millisecond*200, func(t time.Time) tea.Msg {
-			return comparisonProgressMsg{
-				currentFile: m.progressCurrentFile,
-				processed:   m.progressProcessed,
-				total:       m.progressTotal,
-				phase:       m.progressPhase,
-			}
-		}),
-	)
-}
-
-// runComparisonWithProgress runs the comparison with progress updates
-func (m Model) runComparisonWithProgress() tea.Cmd {
-	return func() tea.Msg {
-		util.DebugPrintf("=== runComparisonWithProgress START ===")
-
-		// Create comparison engine with preserved options
-		engine := compare.NewEngine(m.comparisonOptions)
-
-		// Run comparison (this will use the existing comparison logic)
-		// The comparison engine already has built-in progress reporting
-		results, summary, err := engine.Compare(m.leftDir, m.rightDir)
-
-		if err != nil {
-			util.DebugPrintf("Comparison failed: %v", err)
-			return comparisonCompletedMsg{success: false, error: err, results: nil, summary: nil}
-		}
-
-		// Filter out identical files for UI
-		var filteredResults []compare.ComparisonResult
-		for _, result := range results {
-			if result.Status != compare.StatusIdentical {
-				filteredResults = append(filteredResults, result)
-			}
-		}
-
-		// Sort results alphabetically
-		sort.Slice(filteredResults, func(i, j int) bool {
-			return filteredResults[i].RelativePath < filteredResults[j].RelativePath
-		})
-
-		util.DebugPrintf("=== runComparisonWithProgress COMPLETE ===")
-		return comparisonCompletedMsg{success: true, error: nil, results: filteredResults, summary: summary}
+	if err != nil {
+		util.DebugPrintf("Fresh comparison failed: %v", err)
+		m.saveMessage = fmt.Sprintf("Error refreshing comparison: %v", err)
+		return m, nil
 	}
+
+	// Update model with fresh results
+	m.results = results
+	m.summary = summary
+
+	// Initialize actions for new results (all ignore by default)
+	m.fileActions = make(map[string]action.ActionType)
+	for _, result := range m.results {
+		m.fileActions[result.RelativePath] = action.ActionIgnore
+	}
+
+	// Set up cleanup prompt
+	m.showingCleanup = true
+	m.cleanupOldSessionID = m.sessionID // Use current session ID for cleanup
+	m.cleanupActionFile = "dovetail_actions_" + m.sessionID + ".txt"
+
+	util.DebugPrintf("Fresh comparison complete. Found %d different files", len(results))
+	m.saveMessage = "Apply succeeded! Clean up old action and patch files?"
+
+	return m, nil
 }
 
 // performFreshComparison re-runs the directory comparison
