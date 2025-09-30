@@ -145,7 +145,6 @@ type Model struct {
 	hasUnsavedChanges   bool                         // Whether there are unsaved modifications
 	hasUnappliedChanges bool                         // Whether there's a valid action file ready to execute
 	showingSave         bool                         // Whether save confirmation is shown
-	saveMessage         string                       // Save result message
 
 	// Discard changes confirmation
 	showingDiscardConfirm bool   // Whether discard confirmation is shown
@@ -187,6 +186,10 @@ type Model struct {
 	showingPatchCleanup bool                    // Whether patch cleanup confirmation is shown
 	detectedPatchFiles  []compare.PatchFileInfo // Patch files detected during scan
 
+	// Log panel for showing status messages and progress
+	logLines        []string // Log lines to display
+	logScrollOffset int      // Scroll offset for log panel
+
 }
 
 // Init initializes the model (required by bubbletea)
@@ -218,27 +221,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dryRunCompletedMsg:
 		if msg.success {
-			m.saveMessage = "Dry-run completed successfully."
+			m.addLogMessage("Dry-run completed successfully.")
 		} else {
-			m.saveMessage = fmt.Sprintf("Dry-run failed: %v", msg.error)
+			m.addLogMessage(fmt.Sprintf("Dry-run failed: %v", msg.error))
 		}
 		return m, nil
 
 	case applyCompletedMsg:
 		if msg.success {
-			m.saveMessage = "Apply completed successfully. Refreshing comparison..."
+			m.addLogMessage("Apply completed successfully. Refreshing comparison...")
 			// Reset state and refresh comparison
 			return m.refreshAfterApply(msg.filename)
 		} else {
-			m.saveMessage = fmt.Sprintf("Apply failed: %v", msg.error)
+			m.addLogMessage(fmt.Sprintf("Apply failed: %v", msg.error))
 		}
 		return m, nil
 
 	case cleanupCompletedMsg:
 		if msg.success {
-			m.saveMessage = "✅ Cleanup completed successfully."
+			m.addLogMessage("✅ Cleanup completed successfully.")
 		} else {
-			m.saveMessage = fmt.Sprintf("Cleanup failed: %v", msg.error)
+			m.addLogMessage(fmt.Sprintf("Cleanup failed: %v", msg.error))
+		}
+		return m, nil
+
+	case logUpdateMsg:
+		// Add log line and auto-scroll to bottom
+		m.logLines = append(m.logLines, msg.line)
+		// Keep only last 100 lines to prevent memory issues
+		if len(m.logLines) > 100 {
+			m.logLines = m.logLines[len(m.logLines)-100:]
+		}
+		// Auto-scroll to bottom
+		m.logScrollOffset = len(m.logLines) - 1
+		return m, nil
+
+	case comparisonCompleteMsg:
+		if msg.success {
+			// Update model with fresh results
+			m.results = msg.results
+			m.summary = msg.summary
+
+			// Initialize actions for new results (all ignore by default)
+			m.fileActions = make(map[string]action.ActionType)
+			for _, result := range m.results {
+				m.fileActions[result.RelativePath] = action.ActionIgnore
+			}
+
+			// Set up cleanup prompt
+			m.showingCleanup = true
+			m.cleanupOldSessionID = m.sessionID // Use current session ID for cleanup
+			m.cleanupActionFile = "dovetail_actions_" + m.sessionID + ".txt"
+
+			m.addLogMessage("Apply succeeded! Clean up old action and patch files?")
+		} else {
+			m.addLogMessage(fmt.Sprintf("Error refreshing comparison: %v", msg.error))
 		}
 		return m, nil
 
@@ -281,7 +318,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				newModel.err = nil
 				newModel.diffViewportTop = 0
 				newModel.reversedDiff = false // Reset revert mode when returning to file list
-				newModel.saveMessage = ""     // Clear any revert mode messages
+				// Clear any revert mode messages (now handled by log panel)
 				return newModel, cmd
 			}
 			m.showingDiff = false
@@ -289,7 +326,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.diffViewportTop = 0  // Reset scroll position
 			m.reversedDiff = false // Reset revert mode when returning to file list
-			m.saveMessage = ""     // Clear any revert mode messages
+			// Clear any previous message (now handled by log panel)     // Clear any revert mode messages
 		} else {
 			// In file list, q quits the application
 			if m.hasUnsavedChanges {
@@ -317,7 +354,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = nil
 			m.diffViewportTop = 0  // Reset scroll position
 			m.reversedDiff = false // Reset revert mode when returning to file list
-			m.saveMessage = ""     // Clear any revert mode messages
+			// Clear any previous message (now handled by log panel)     // Clear any revert mode messages
 		} else if m.searchString != "" {
 			// Clear search in normal mode
 			m.searchString = ""
@@ -364,7 +401,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.showingDiff && len(m.results) > 0 {
 			// Load diff for selected file - reset revert mode for new file
 			m.reversedDiff = false
-			m.saveMessage = "" // Clear any revert mode messages
+			// Clear any previous message (now handled by log panel) // Clear any revert mode messages
 			return m, m.loadDiff()
 		} else if m.showingDiff && !m.hunkMode {
 			// Enter hunk mode for selective editing
@@ -465,8 +502,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				deleteAction = action.ActionDeleteRight
 			default:
 				// Show error for files that exist on both sides
-				m.saveMessage = fmt.Sprintf("Delete not valid for %s files (exists on both sides)",
-					result.Status.String())
+				m.addLogMessage(fmt.Sprintf("Delete not valid for %s files (exists on both sides)",
+					result.Status.String()))
 				return m, nil
 			}
 			return m.setAction(deleteAction), nil
@@ -501,7 +538,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.searchMatches) > 0 {
 				m = m.nextSearchMatch()
 			} else if m.searchString == "" {
-				m.saveMessage = "No active search"
+				m.addLogMessage("No active search")
 			}
 		}
 	case "N", "p":
@@ -514,7 +551,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.searchMatches) > 0 {
 				m = m.prevSearchMatch()
 			} else if m.searchString == "" {
-				m.saveMessage = "No active search"
+				m.addLogMessage("No active search")
 			}
 		}
 
@@ -530,9 +567,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.appliedHunks = nil
 			}
 			if m.reversedDiff {
-				m.saveMessage = "⚠ REVERT MODE enabled - applying changes RIGHT → LEFT"
+				m.addLogMessage("⚠ REVERT MODE enabled - applying changes RIGHT → LEFT")
 			} else {
-				m.saveMessage = "Normal mode restored - applying changes LEFT → RIGHT"
+				m.addLogMessage("Normal mode restored - applying changes LEFT → RIGHT")
 			}
 			// Reload diff with new direction
 			return m, m.loadDiff()
@@ -681,13 +718,91 @@ func (m Model) View() string {
 		mainContent = m.viewFileList()
 	}
 
+	// Always render with log panel
+	contentWithLogs := m.renderWithLogPanel(mainContent)
+
 	// Check if any modal dialog is active
 	if modalContent := m.renderActiveModal(); modalContent != "" {
-		// Overlay the modal on top of the main content
-		return m.overlayModal(mainContent, modalContent)
+		// Overlay the modal on top of the content with log panel
+		return m.overlayModal(contentWithLogs, modalContent)
 	}
 
-	return mainContent
+	return contentWithLogs
+}
+
+// renderWithLogPanel renders the main content with a log panel at the bottom
+func (m Model) renderWithLogPanel(mainContent string) string {
+	// Get terminal dimensions
+	termWidth, termHeight := m.getTerminalSize()
+
+	// Reserve 10% of vertical space for log panel (minimum 5 lines)
+	logPanelHeight := termHeight / 10
+	if logPanelHeight < 5 {
+		logPanelHeight = 5
+	}
+	if logPanelHeight > 15 {
+		logPanelHeight = 15
+	}
+
+	// Calculate main content height
+	mainHeight := termHeight - logPanelHeight - 1 // -1 for separator
+
+	// Split main content to fit available height
+	mainLines := strings.Split(mainContent, "\n")
+	if len(mainLines) > mainHeight {
+		mainLines = mainLines[:mainHeight]
+	}
+	mainContent = strings.Join(mainLines, "\n")
+
+	// Create log panel
+	logPanel := m.renderLogPanel(logPanelHeight, termWidth)
+
+	// Combine main content and log panel
+	separator := strings.Repeat("─", termWidth)
+	return mainContent + "\n" + separator + "\n" + logPanel
+}
+
+// renderLogPanel renders the log panel
+func (m Model) renderLogPanel(height, width int) string {
+	// Create log panel style
+	logStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("12")). // Blue border
+		Background(lipgloss.Color("0")).
+		Padding(0, 1).
+		Height(height).
+		Width(width)
+
+	// Get visible log lines
+	visibleLines := m.getVisibleLogLines(height - 2) // -2 for border padding
+
+	// Create log content
+	logContent := strings.Join(visibleLines, "\n")
+
+	return logStyle.Render("Comparison Progress:\n" + logContent)
+}
+
+// getVisibleLogLines returns the visible log lines based on scroll offset
+func (m Model) getVisibleLogLines(maxLines int) []string {
+	if len(m.logLines) == 0 {
+		return []string{"No logs yet..."}
+	}
+
+	// Calculate start and end indices
+	start := m.logScrollOffset
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(m.logLines) {
+		start = len(m.logLines) - 1
+	}
+
+	end := start + maxLines
+	if end > len(m.logLines) {
+		end = len(m.logLines)
+	}
+
+	return m.logLines[start:end]
 }
 
 // isModalActive returns true if any modal dialog is currently showing
@@ -1025,15 +1140,7 @@ func (m Model) viewFileList() string {
 		b.WriteString(helpStyle.Render("q: quit"))
 	}
 
-	// Show save message if any
-	if m.saveMessage != "" {
-		b.WriteString("\n")
-		messageStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-		if strings.Contains(m.saveMessage, "Error") {
-			messageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-		}
-		b.WriteString(messageStyle.Render(m.saveMessage))
-	}
+	// Status messages now shown in log panel
 
 	// Show changes indicator
 	if m.hasUnsavedChanges {
@@ -1259,15 +1366,15 @@ func (m Model) handleDiscardConfirm(confirm bool) (tea.Model, tea.Cmd) {
 		m.hasUnappliedChanges = true // Will be ready to execute after save
 
 		if len(deletedFiles) > 0 {
-			m.saveMessage = fmt.Sprintf("Discarded staged changes: %s patches deleted", strings.Join(deletedFiles, " and "))
+			m.addLogMessage(fmt.Sprintf("Discarded staged changes: %s patches deleted", strings.Join(deletedFiles, " and ")))
 		} else {
-			m.saveMessage = "No patch files found to discard"
+			m.addLogMessage("No patch files found to discard")
 		}
 	} else {
 		// User cancelled - just hide the dialog
 		m.showingDiscardConfirm = false
 		m.discardFilePath = ""
-		m.saveMessage = "Discard cancelled"
+		m.addLogMessage("Discard cancelled")
 	}
 
 	return m, nil
@@ -1279,7 +1386,7 @@ func (m Model) handleCleanupConfirm(confirm bool) (Model, tea.Cmd) {
 		// User confirmed - run cleanup
 		executable, err := os.Executable()
 		if err != nil {
-			m.saveMessage = fmt.Sprintf("Error finding executable: %v", err)
+			m.addLogMessage(fmt.Sprintf("Error finding executable: %v", err))
 			m.showingCleanup = false
 			return m, nil
 		}
@@ -1299,14 +1406,14 @@ func (m Model) handleCleanupConfirm(confirm bool) (Model, tea.Cmd) {
 		)
 
 		m.showingCleanup = false
-		m.saveMessage = "Running cleanup..."
+		m.addLogMessage("Running cleanup...")
 		return m, cmd
 	} else {
 		// User cancelled cleanup
 		m.showingCleanup = false
 		m.cleanupOldSessionID = ""
 		m.cleanupActionFile = ""
-		m.saveMessage = "Cleanup skipped"
+		m.addLogMessage("Cleanup skipped")
 	}
 
 	return m, nil
@@ -1344,16 +1451,16 @@ func (m Model) handlePatchCleanupConfirm(confirm bool) (Model, tea.Cmd) {
 
 		// Show result message
 		if successCount > 0 && errorCount == 0 {
-			m.saveMessage = fmt.Sprintf("✅ Successfully cleaned up %d patch files", successCount)
+			m.addLogMessage(fmt.Sprintf("✅ Successfully cleaned up %d patch files", successCount))
 		} else if successCount > 0 && errorCount > 0 {
-			m.saveMessage = fmt.Sprintf("⚠ Cleaned up %d patch files, %d failed", successCount, errorCount)
+			m.addLogMessage(fmt.Sprintf("⚠ Cleaned up %d patch files, %d failed", successCount, errorCount))
 		} else {
-			m.saveMessage = fmt.Sprintf("❌ Failed to clean up patch files: %s", strings.Join(errorMessages, "; "))
+			m.addLogMessage(fmt.Sprintf("❌ Failed to clean up patch files: %s", strings.Join(errorMessages, "; ")))
 		}
 	} else {
 		// User cancelled cleanup
 		m.showingPatchCleanup = false
-		m.saveMessage = "Patch cleanup skipped"
+		m.addLogMessage("Patch cleanup skipped")
 	}
 
 	return m, nil
@@ -1370,7 +1477,7 @@ func (m Model) handleQuitConfirm(confirm bool) (tea.Model, tea.Cmd) {
 	} else {
 		// User cancelled quit
 		m.showingQuitConfirm = false
-		m.saveMessage = "Quit cancelled"
+		m.addLogMessage("Quit cancelled")
 	}
 
 	return m, nil
@@ -1386,8 +1493,8 @@ func (m Model) setAction(newAction action.ActionType) Model {
 	// Validate action is allowed for this file status
 	if !m.isActionValid(newAction, result.Status) {
 		// Show error message briefly
-		m.saveMessage = fmt.Sprintf("Action '%s' not valid for %s files",
-			newAction.String(), result.Status.String())
+		m.addLogMessage(fmt.Sprintf("Action '%s' not valid for %s files",
+			newAction.String(), result.Status.String()))
 		return m
 	}
 
@@ -1395,7 +1502,7 @@ func (m Model) setAction(newAction action.ActionType) Model {
 	m.fileActions[result.RelativePath] = newAction
 	m.hasUnsavedChanges = true   // Need to save changes
 	m.hasUnappliedChanges = true // Will be ready to execute after save
-	m.saveMessage = ""           // Clear any previous message
+	// Clear any previous message (now handled by log panel)
 
 	// Auto-advance to next file for better UX
 	if m.cursor < len(m.results)-1 {
@@ -1432,14 +1539,14 @@ func (m Model) isActionValid(act action.ActionType, status compare.FileStatus) b
 // saveActionFileWithState handles file writing and state management
 func (m Model) saveActionFileWithState(filename string, successMessage string) (Model, error) {
 	if err := m.writeActionFile(filename); err != nil {
-		m.saveMessage = fmt.Sprintf("Error saving: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error saving: %v", err))
 		return m, err
 	}
 
 	// Update state after successful save
 	m.hasUnsavedChanges = false  // Changes are now saved
 	m.hasUnappliedChanges = true // Ready to execute
-	m.saveMessage = successMessage
+	m.addLogMessage(successMessage)
 
 	return m, nil
 }
@@ -1447,7 +1554,7 @@ func (m Model) saveActionFileWithState(filename string, successMessage string) (
 // saveActionFile initiates the manual save process
 func (m Model) saveActionFile() (Model, tea.Cmd) {
 	if !m.hasUnsavedChanges {
-		m.saveMessage = "No changes to save"
+		m.addLogMessage("No changes to save")
 		return m, nil
 	}
 
@@ -1627,9 +1734,9 @@ func (m *Model) executeSearch() {
 			m.viewportTop = m.cursor - visibleLines + 1
 		}
 
-		m.saveMessage = fmt.Sprintf("Found %d matches - jumped to first", len(m.searchMatches))
+		m.addLogMessage(fmt.Sprintf("Found %d matches - jumped to first", len(m.searchMatches)))
 	} else {
-		m.saveMessage = fmt.Sprintf("'%s' not found", m.searchString)
+		m.addLogMessage(fmt.Sprintf("'%s' not found", m.searchString))
 	}
 }
 
@@ -1650,7 +1757,7 @@ func (m Model) nextSearchMatch() Model {
 		m.viewportTop = m.cursor - visibleLines + 1
 	}
 
-	m.saveMessage = fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches))
+	m.addLogMessage(fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches)))
 	return m
 }
 
@@ -1671,7 +1778,7 @@ func (m Model) prevSearchMatch() Model {
 		m.viewportTop = m.cursor - visibleLines + 1
 	}
 
-	m.saveMessage = fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches))
+	m.addLogMessage(fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches)))
 	return m
 }
 
@@ -1723,12 +1830,12 @@ func (m Model) enterHunkMode() Model {
 	// Parse diff content into hunks
 	hunks, err := parseDiffIntoHunks(m.currentDiff)
 	if err != nil {
-		m.saveMessage = fmt.Sprintf("Error parsing diff: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error parsing diff: %v", err))
 		return m
 	}
 
 	if len(hunks) == 0 {
-		m.saveMessage = "No editable hunks found in diff"
+		m.addLogMessage("No editable hunks found in diff")
 		return m
 	}
 
@@ -1737,7 +1844,7 @@ func (m Model) enterHunkMode() Model {
 	m.hunks = hunks
 	m.currentHunk = 0
 	m.appliedHunks = make([]bool, len(hunks))
-	m.saveMessage = fmt.Sprintf("Hunk mode: %d hunks available", len(hunks))
+	m.addLogMessage(fmt.Sprintf("Hunk mode: %d hunks available", len(hunks)))
 
 	return m
 }
@@ -1770,7 +1877,7 @@ func (m Model) exitHunkMode() (Model, tea.Cmd) {
 	// No temp files created - no changes made
 	util.DebugPrintf("No temp files found - no changes made")
 	m.cleanupTempFiles()
-	m.saveMessage = "Exited hunk mode - no changes made"
+	m.addLogMessage("Exited hunk mode - no changes made")
 	return m, nil
 }
 
@@ -1786,7 +1893,7 @@ func (m Model) applyCurrentHunk() (Model, tea.Cmd) {
 
 	if m.appliedHunks[m.currentHunk] {
 		util.DebugPrintf("Hunk already applied")
-		m.saveMessage = fmt.Sprintf("Hunk %d already applied", m.currentHunk+1)
+		m.addLogMessage(fmt.Sprintf("Hunk %d already applied", m.currentHunk+1))
 		return m, nil
 	}
 
@@ -1794,7 +1901,7 @@ func (m Model) applyCurrentHunk() (Model, tea.Cmd) {
 	// Create temp file for target side based on current diff direction
 	if err := m.ensureTempTargetFile(); err != nil {
 		util.DebugPrintf("Error creating temp files: %v", err)
-		m.saveMessage = fmt.Sprintf("Error creating temp files: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error creating temp files: %v", err))
 		return m, nil
 	}
 
@@ -1803,7 +1910,7 @@ func (m Model) applyCurrentHunk() (Model, tea.Cmd) {
 	hunk := m.hunks[m.currentHunk]
 	if err := m.applyHunkToTargetFile(hunk); err != nil {
 		util.DebugPrintf("Error applying hunk: %v", err)
-		m.saveMessage = fmt.Sprintf("Error applying hunk: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error applying hunk: %v", err))
 		return m, nil
 	}
 
@@ -1822,7 +1929,7 @@ func (m Model) applyCurrentHunk() (Model, tea.Cmd) {
 	if m.reversedDiff {
 		directionStr = "revert right→left"
 	}
-	m.saveMessage = fmt.Sprintf("Applied hunk %d/%d (%s)", m.currentHunk+1, len(m.hunks), directionStr)
+	m.addLogMessage(fmt.Sprintf("Applied hunk %d/%d (%s)", m.currentHunk+1, len(m.hunks), directionStr))
 	util.DebugPrintf("Hunk applied successfully, regenerating diff...")
 
 	// Regenerate diff with updated temp files - this will cause immediate refresh
@@ -2180,7 +2287,7 @@ func (m *Model) regenerateDiff() (Model, tea.Cmd) {
 			util.DebugPrintf("Diff command completed (exit code 1), output length: %d", len(output))
 		} else {
 			util.DebugPrintf("ERROR: diff command failed: %v", err)
-			m.saveMessage = fmt.Sprintf("Error regenerating diff: %v", err)
+			m.addLogMessage(fmt.Sprintf("Error regenerating diff: %v", err))
 			return *m, nil
 		}
 	} else {
@@ -2194,7 +2301,7 @@ func (m *Model) regenerateDiff() (Model, tea.Cmd) {
 	// Re-parse hunks
 	hunks, err := parseDiffIntoHunks(m.currentDiff)
 	if err != nil {
-		m.saveMessage = fmt.Sprintf("Error re-parsing hunks: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error re-parsing hunks: %v", err))
 		return *m, nil
 	}
 
@@ -2298,7 +2405,7 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 		util.DebugPrintf("Left patch content length: %d bytes", len(leftPatchContent))
 		if err := ioutil.WriteFile(leftPatchPath, []byte(leftPatchContent), 0644); err != nil {
 			util.DebugPrintf("ERROR writing left patch file: %v", err)
-			m.saveMessage = fmt.Sprintf("Error saving left patch: %v", err)
+			m.addLogMessage(fmt.Sprintf("Error saving left patch: %v", err))
 			m.cleanupTempFiles()
 			return *m, nil
 		}
@@ -2313,7 +2420,7 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 		util.DebugPrintf("Right patch content length: %d bytes", len(rightPatchContent))
 		if err := ioutil.WriteFile(rightPatchPath, []byte(rightPatchContent), 0644); err != nil {
 			util.DebugPrintf("ERROR writing right patch file: %v", err)
-			m.saveMessage = fmt.Sprintf("Error saving right patch: %v", err)
+			m.addLogMessage(fmt.Sprintf("Error saving right patch: %v", err))
 			m.cleanupTempFiles()
 			return *m, nil
 		}
@@ -2324,7 +2431,7 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 	}
 
 	if patchesGenerated == 0 {
-		m.saveMessage = "No changes to save"
+		m.addLogMessage("No changes to save")
 		m.cleanupTempFiles()
 		return *m, nil
 	}
@@ -2337,12 +2444,12 @@ func (m *Model) generatePatchFile() (Model, tea.Cmd) {
 	// Show appropriate success message
 	if patchesGenerated == 1 {
 		if leftPatchContent != "" {
-			m.saveMessage = fmt.Sprintf("Left patch saved: %s", leftPatchPath)
+			m.addLogMessage(fmt.Sprintf("Left patch saved: %s", leftPatchPath))
 		} else {
-			m.saveMessage = fmt.Sprintf("Right patch saved: %s", rightPatchPath)
+			m.addLogMessage(fmt.Sprintf("Right patch saved: %s", rightPatchPath))
 		}
 	} else {
-		m.saveMessage = fmt.Sprintf("Both patches saved: %s, %s", leftPatchPath, rightPatchPath)
+		m.addLogMessage(fmt.Sprintf("Both patches saved: %s, %s", leftPatchPath, rightPatchPath))
 	}
 
 	util.DebugPrintf("Generated %d patch files successfully", patchesGenerated)
@@ -2403,7 +2510,7 @@ func (m Model) runDryRun() (Model, tea.Cmd) {
 	executable, err := os.Executable()
 	if err != nil {
 		util.LogInfo("ERROR: Failed to get executable path: %v", err)
-		m.saveMessage = fmt.Sprintf("Error finding executable: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error finding executable: %v", err))
 		return m, nil
 	}
 	util.LogInfo("Executable path: %q", executable)
@@ -2453,7 +2560,7 @@ func (m Model) runApply() (Model, tea.Cmd) {
 	executable, err := os.Executable()
 	if err != nil {
 		util.LogInfo("ERROR: Failed to get executable path: %v", err)
-		m.saveMessage = fmt.Sprintf("Error finding executable: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error finding executable: %v", err))
 		return m, nil
 	}
 	util.LogInfo("Executable path: %q", executable)
@@ -2500,6 +2607,18 @@ type cleanupCompletedMsg struct {
 	error   error
 }
 
+// Log update message types
+type logUpdateMsg struct {
+	line string
+}
+
+type comparisonCompleteMsg struct {
+	success bool
+	error   error
+	results []compare.ComparisonResult
+	summary *compare.ComparisonSummary
+}
+
 // refreshAfterApply handles post-apply state reset and comparison refresh
 func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	util.DebugPrintf("=== refreshAfterApply ENTRY ===")
@@ -2526,13 +2645,103 @@ func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	m.appliedHunks = nil
 	m.cleanupTempFiles()
 
-	// Run fresh comparison (like initial comparison, showing logs)
-	util.DebugPrintf("Running fresh comparison after apply...")
+	// Add log message and start comparison with progress updates
+	m.addLogMessage("Starting fresh comparison...")
+
+	// Start comparison with log updates
+	return m, m.runComparisonWithLogs()
+}
+
+// runComparisonWithLogs runs the comparison and sends log updates
+func (m Model) runComparisonWithLogs() tea.Cmd {
+	return tea.Batch(
+		// Start the comparison
+		func() tea.Msg {
+			util.DebugPrintf("=== runComparisonWithLogs START ===")
+
+			// Create comparison engine with preserved options
+			engine := compare.NewEngine(m.comparisonOptions)
+
+			// Run comparison (this will use the existing comparison logic)
+			results, summary, err := engine.Compare(m.leftDir, m.rightDir)
+
+			if err != nil {
+				util.DebugPrintf("Comparison failed: %v", err)
+				return comparisonCompleteMsg{success: false, error: err, results: nil, summary: nil}
+			}
+
+			// Filter out identical files for UI
+			var filteredResults []compare.ComparisonResult
+			for _, result := range results {
+				if result.Status != compare.StatusIdentical {
+					filteredResults = append(filteredResults, result)
+				}
+			}
+
+			// Sort results alphabetically
+			sort.Slice(filteredResults, func(i, j int) bool {
+				return filteredResults[i].RelativePath < filteredResults[j].RelativePath
+			})
+
+			util.DebugPrintf("=== runComparisonWithLogs COMPLETE ===")
+			return comparisonCompleteMsg{success: true, error: nil, results: filteredResults, summary: summary}
+		},
+		// Send periodic log updates to show activity
+		tea.Tick(time.Millisecond*500, func(t time.Time) tea.Msg {
+			// Send a simple progress indicator
+			return logUpdateMsg{line: fmt.Sprintf("Comparing directories... %s", time.Now().Format("15:04:05"))}
+		}),
+	)
+}
+
+// addLogMessage adds a message to the log panel
+func (m *Model) addLogMessage(message string) {
+	timestamp := time.Now().Format("15:04:05")
+	logLine := fmt.Sprintf("[%s] %s", timestamp, message)
+	m.logLines = append(m.logLines, logLine)
+
+	// Keep only last 100 lines to prevent memory issues
+	if len(m.logLines) > 100 {
+		m.logLines = m.logLines[len(m.logLines)-100:]
+	}
+
+	// Auto-scroll to bottom
+	m.logScrollOffset = len(m.logLines) - 1
+}
+
+// reloadComparisonResults reloads the comparison results after apply+refresh
+func (m Model) reloadComparisonResults() (Model, tea.Cmd) {
+	util.DebugPrintf("=== reloadComparisonResults START ===")
+
+	// Store old session info for cleanup
+	oldSessionID := m.sessionID
+
+	// Generate new session ID
+	m.sessionID = time.Now().Format("20060102_150405")
+	util.DebugPrintf("New session ID: %s (old: %s)", m.sessionID, oldSessionID)
+
+	// Reset TUI state - clean slate after successful apply
+	m.hasUnsavedChanges = false
+	m.hasUnappliedChanges = false // Applied successfully, nothing left to execute
+	m.showingDiff = false
+	m.currentDiff = ""
+	m.err = nil
+	m.cursor = 0
+	m.viewportTop = 0
+	m.reversedDiff = false
+	m.hunkMode = false
+	m.hunks = nil
+	m.currentHunk = 0
+	m.appliedHunks = nil
+	m.cleanupTempFiles()
+
+	// Run fresh comparison to get updated results
+	util.DebugPrintf("Running fresh comparison to reload results...")
 	results, summary, err := m.performFreshComparison()
 
 	if err != nil {
 		util.DebugPrintf("Fresh comparison failed: %v", err)
-		m.saveMessage = fmt.Sprintf("Error refreshing comparison: %v", err)
+		m.addLogMessage(fmt.Sprintf("Error reloading comparison: %v", err))
 		return m, nil
 	}
 
@@ -2552,7 +2761,7 @@ func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	m.cleanupActionFile = "dovetail_actions_" + m.sessionID + ".txt"
 
 	util.DebugPrintf("Fresh comparison complete. Found %d different files", len(results))
-	m.saveMessage = "Apply succeeded! Clean up old action and patch files?"
+	m.addLogMessage("Apply succeeded! Clean up old action and patch files?")
 
 	return m, nil
 }
