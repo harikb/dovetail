@@ -452,10 +452,6 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.viewportTop = 0
 			}
 		}
-		// Also scroll log panel up
-		if m.logScrollOffset > 0 {
-			m.logScrollOffset = max(0, m.logScrollOffset-5)
-		}
 
 	case "pgdown", "page_down":
 		if m.showingDiff {
@@ -485,11 +481,6 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.viewportTop = 0
 				}
 			}
-		}
-		// Also scroll log panel down
-		maxScroll := len(m.logLines) - 1
-		if m.logScrollOffset < maxScroll {
-			m.logScrollOffset = min(maxScroll, m.logScrollOffset+5)
 		}
 
 	// Interactive action keys - file list view or hunk mode
@@ -797,14 +788,14 @@ func (m Model) renderWithLogPanel(mainContent string) string {
 
 // renderLogPanel renders the log panel
 func (m Model) renderLogPanel(height, width int) string {
-	// Create log panel style - don't set width to avoid border issues
+	// Create log panel style
 	logStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("12")). // Blue border
 		Background(lipgloss.Color("0")).
 		Padding(0, 1).
 		Height(height).
-		MaxWidth(width - 2) // Account for border
+		Width(width)
 
 	// Get visible log lines
 	visibleLines := m.getVisibleLogLines(height - 2) // -2 for border padding
