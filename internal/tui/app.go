@@ -31,24 +31,48 @@ func SetProfilingCleanup(cleanup func()) {
 
 // getVisibleFileListLines calculates how many file lines can fit in the viewport
 func (m Model) getVisibleFileListLines() int {
-	// Reserve space for header, directories, summary, and footer
-	// Approximate: Header(3) + Dirs(3) + Summary(2) + Footer(5) = 13 lines
+	// Reserve space for header, directories, summary, footer, and log panel
+	// Approximate: Header(3) + Dirs(3) + Summary(2) + Footer(5) + LogPanel(10%) = 13 + logPanelHeight
 	headerLines := 13
-	if m.windowHeight <= headerLines {
+
+	// Calculate log panel height (10% of screen, min 5, max 15)
+	logPanelHeight := m.windowHeight / 10
+	if logPanelHeight < 5 {
+		logPanelHeight = 5
+	}
+	if logPanelHeight > 15 {
+		logPanelHeight = 15
+	}
+
+	totalReserved := headerLines + logPanelHeight + 1 // +1 for separator
+
+	if m.windowHeight <= totalReserved {
 		return 1 // Always show at least 1 line
 	}
-	return m.windowHeight - headerLines
+	return m.windowHeight - totalReserved
 }
 
 // getVisibleDiffLines calculates how many diff lines can fit in the diff viewport
 func (m Model) getVisibleDiffLines() int {
-	// Reserve space for header and footer in diff view
-	// Approximate: Header(3) + Footer(3) = 6 lines
+	// Reserve space for header, footer, and log panel in diff view
+	// Approximate: Header(3) + Footer(3) + LogPanel(10%) = 6 + logPanelHeight
 	headerLines := 6
-	if m.windowHeight <= headerLines {
+
+	// Calculate log panel height (10% of screen, min 5, max 15)
+	logPanelHeight := m.windowHeight / 10
+	if logPanelHeight < 5 {
+		logPanelHeight = 5
+	}
+	if logPanelHeight > 15 {
+		logPanelHeight = 15
+	}
+
+	totalReserved := headerLines + logPanelHeight + 1 // +1 for separator
+
+	if m.windowHeight <= totalReserved {
 		return 1 // Always show at least 1 line
 	}
-	return m.windowHeight - headerLines
+	return m.windowHeight - totalReserved
 }
 
 // DiffHunk represents a parsed hunk from unified diff
