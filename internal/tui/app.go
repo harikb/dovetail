@@ -927,8 +927,12 @@ func (m Model) renderProgressModal() string {
 		phaseText = "Comparing files"
 	}
 
-	progressText := fmt.Sprintf("%s\n\nProgress: %d/%d files (%d%%)\n\n%s\n\nCurrent: %s\n\n[ESC] Cancel",
-		phaseText, m.progressProcessed, m.progressTotal, percentage, progressBar, currentFile)
+	// Create animated indicator
+	indicators := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	indicator := indicators[(time.Now().UnixNano()/100000000)%int64(len(indicators))]
+
+	progressText := fmt.Sprintf("%s %s\n\nProgress: %d/%d files (%d%%)\n\n%s\n\nCurrent: %s\n\n[ESC] Cancel",
+		indicator, phaseText, m.progressProcessed, m.progressTotal, percentage, progressBar, currentFile)
 
 	return progressStyle.Render(progressText)
 }
@@ -2630,9 +2634,21 @@ func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	m.progressProcessed = 0
 	m.progressTotal = 0
 	m.progressCancelled = false
+	m.progressCurrentFile = "Starting comparison..."
 
-	// Start comparison with progress updates
-	return m, m.runComparisonWithProgress()
+	// Start comparison with progress updates and animation timer
+	return m, tea.Batch(
+		m.runComparisonWithProgress(),
+		// Refresh progress dialog every 200ms for animation
+		tea.Tick(time.Millisecond*200, func(t time.Time) tea.Msg {
+			return comparisonProgressMsg{
+				currentFile: m.progressCurrentFile,
+				processed:   m.progressProcessed,
+				total:       m.progressTotal,
+				phase:       m.progressPhase,
+			}
+		}),
+	)
 }
 
 // runComparisonWithProgress runs the comparison with progress updates
@@ -2644,6 +2660,7 @@ func (m Model) runComparisonWithProgress() tea.Cmd {
 		engine := compare.NewEngine(m.comparisonOptions)
 
 		// Run comparison (this will use the existing comparison logic)
+		// The comparison engine already has built-in progress reporting
 		results, summary, err := engine.Compare(m.leftDir, m.rightDir)
 
 		if err != nil {
