@@ -173,16 +173,23 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []
 	fileCount := 0
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			// Skip files we can't access rather than failing completely
-			util.VerbosePrintf(e.verboseLevel, 2, "Skipping inaccessible path (%s): %s", side, path)
-			return nil
+		// Log every file/directory being processed
+		relPath, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			util.DebugPrintf("Error calculating relative path for %s: %v", path, relErr)
+			relPath = path
 		}
 
-		// Calculate relative path
-		relPath, err := filepath.Rel(dir, path)
+		// Log every 1000th file to track progress
+		if fileCount%1000 == 0 {
+			util.DebugPrintf("Processing file %d (%s): %s", fileCount, side, relPath)
+		}
+
 		if err != nil {
-			return err
+			// Skip files we can't access rather than failing completely
+			util.DebugPrintf("Skipping inaccessible path (%s): %s - %v", side, path, err)
+			util.VerbosePrintf(e.verboseLevel, 2, "Skipping inaccessible path (%s): %s", side, path)
+			return nil
 		}
 
 		// Skip root directory
@@ -192,6 +199,7 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []
 
 		// Report current directory being scanned
 		if info.IsDir() {
+			util.DebugPrintf("Scanning directory (%s): %s", side, relPath)
 			util.VerbosePrintf(e.verboseLevel, 2, "Scanning directory (%s): %s", side, relPath)
 		}
 
@@ -234,6 +242,10 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []
 		// Report file being processed
 		if !info.IsDir() {
 			fileCount++
+			// Log every 1000th file for progress tracking
+			if fileCount%1000 == 0 {
+				util.DebugPrintf("Found file %d (%s): %s", fileCount, side, relPath)
+			}
 			if e.verboseLevel >= 3 {
 				util.VerbosePrintf(e.verboseLevel, 3, "Found file (%s): %s", side, relPath)
 			} else if e.verboseLevel >= 2 && fileCount%100 == 0 {
@@ -252,10 +264,15 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []
 
 		// Calculate hash for files (not directories)
 		if !info.IsDir() {
+			// Log hash calculation for every 1000th file
+			if fileCount%1000 == 0 {
+				util.DebugPrintf("Calculating hash for file %d (%s): %s", fileCount, side, relPath)
+			}
 			util.VerbosePrintf(e.verboseLevel, 3, "Calculating hash (%s): %s", side, relPath)
 			hash, err := e.calculateHash(path)
 			if err != nil {
 				// Log error but don't fail - we'll mark as different
+				util.DebugPrintf("Hash calculation failed (%s): %s - %v", side, relPath, err)
 				util.VerbosePrintf(e.verboseLevel, 2, "Hash calculation failed (%s): %s - %v", side, relPath, err)
 				fileInfo.Hash = "ERROR_CALCULATING_HASH"
 			} else {
