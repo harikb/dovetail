@@ -1104,7 +1104,17 @@ func (m Model) viewFileList() string {
 
 			// Get current action for this file
 			currentAction := m.fileActions[result.RelativePath]
-			actionColor := getActionColor(currentAction)
+
+			// Check if newer file is being overwritten by older file
+			isTimestampConflict := isNewerFileOverwrittenByOlder(result, currentAction)
+
+			// Choose action color - red if timestamp conflict, otherwise normal
+			var actionColor lipgloss.Color
+			if isTimestampConflict {
+				actionColor = lipgloss.Color("9") // Red for timestamp conflicts
+			} else {
+				actionColor = getActionColor(currentAction)
+			}
 			actionStyle := lipgloss.NewStyle().Foreground(actionColor)
 
 			// Format: [ACTION] STATUS file_path with search highlighting
@@ -1137,7 +1147,14 @@ func (m Model) viewFileList() string {
 				actionPart := actionStyle.Render(fmt.Sprintf("  [%s]", actionStr))
 				statusPart := statusStyle.Render(fmt.Sprintf(" %-14s", result.Status.String()))
 				metadataPart := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).Render(fmt.Sprintf(" %s ", metadataStr)) // Bright cyan, bold
-				line = actionPart + statusPart + metadataPart + " " + filePath
+
+				// If timestamp conflict, highlight the entire line with a subtle background
+				if isTimestampConflict {
+					conflictStyle := lipgloss.NewStyle().Background(lipgloss.Color("52")).Foreground(lipgloss.Color("15")) // Dark red background, white text
+					line = conflictStyle.Render(actionPart + statusPart + metadataPart + " " + filePath)
+				} else {
+					line = actionPart + statusPart + metadataPart + " " + filePath
+				}
 			}
 
 			b.WriteString(line)
@@ -1148,7 +1165,13 @@ func (m Model) viewFileList() string {
 	// Footer/Help with interactive commands
 	b.WriteString("\n")
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	conflictStyle := lipgloss.NewStyle().Background(lipgloss.Color("52")).Foreground(lipgloss.Color("15"))
+
 	if len(m.results) > 0 {
+		// Show timestamp conflict explanation
+		b.WriteString(conflictStyle.Render("⚠ Red highlighting: Newer file will be overwritten by older file"))
+		b.WriteString("\n")
+
 		if m.searchMode {
 			// Show search prompt
 			searchStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
@@ -1678,6 +1701,31 @@ func getStatusColor(status compare.FileStatus) lipgloss.Color {
 	default:
 		return lipgloss.Color("15") // White
 	}
+}
+
+// isNewerFileOverwrittenByOlder checks if a newer file is being overwritten by an older file
+func isNewerFileOverwrittenByOlder(result compare.ComparisonResult, actionType action.ActionType) bool {
+	// Only check for copy actions (>, <) that would overwrite files
+	if actionType != action.ActionCopyToRight && actionType != action.ActionCopyToLeft {
+		return false
+	}
+
+	// Only check if both files exist and are not directories
+	if result.LeftInfo == nil || result.RightInfo == nil ||
+		result.LeftInfo.IsDir || result.RightInfo.IsDir {
+		return false
+	}
+
+	// Check if we're copying an older file over a newer one
+	if actionType == action.ActionCopyToRight {
+		// Copying left to right: check if left is older than right
+		return result.TimeComparison == compare.TimeLeftOlder
+	} else if actionType == action.ActionCopyToLeft {
+		// Copying right to left: check if right is older than left
+		return result.TimeComparison == compare.TimeLeftNewer
+	}
+
+	return false
 }
 
 // getActionColor returns the appropriate color for an action
