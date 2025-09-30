@@ -1730,6 +1730,15 @@ func (m *Model) executeSearch() {
 	if len(m.searchMatches) > 0 {
 		m.matchIndex = 0
 		m.cursor = m.searchMatches[0]
+
+		// Ensure the selected item is visible in the viewport
+		visibleLines := m.getVisibleFileListLines()
+		if m.cursor < m.viewportTop {
+			m.viewportTop = m.cursor
+		} else if m.cursor >= m.viewportTop+visibleLines {
+			m.viewportTop = m.cursor - visibleLines + 1
+		}
+
 		m.saveMessage = fmt.Sprintf("Found %d matches - jumped to first", len(m.searchMatches))
 	} else {
 		m.saveMessage = fmt.Sprintf("'%s' not found", m.searchString)
@@ -1744,6 +1753,15 @@ func (m Model) nextSearchMatch() Model {
 
 	m.matchIndex = (m.matchIndex + 1) % len(m.searchMatches)
 	m.cursor = m.searchMatches[m.matchIndex]
+
+	// Ensure the selected item is visible in the viewport
+	visibleLines := m.getVisibleFileListLines()
+	if m.cursor < m.viewportTop {
+		m.viewportTop = m.cursor
+	} else if m.cursor >= m.viewportTop+visibleLines {
+		m.viewportTop = m.cursor - visibleLines + 1
+	}
+
 	m.saveMessage = fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches))
 	return m
 }
@@ -1756,6 +1774,15 @@ func (m Model) prevSearchMatch() Model {
 
 	m.matchIndex = (m.matchIndex - 1 + len(m.searchMatches)) % len(m.searchMatches)
 	m.cursor = m.searchMatches[m.matchIndex]
+
+	// Ensure the selected item is visible in the viewport
+	visibleLines := m.getVisibleFileListLines()
+	if m.cursor < m.viewportTop {
+		m.viewportTop = m.cursor
+	} else if m.cursor >= m.viewportTop+visibleLines {
+		m.viewportTop = m.cursor - visibleLines + 1
+	}
+
 	m.saveMessage = fmt.Sprintf("Match %d of %d", m.matchIndex+1, len(m.searchMatches))
 	return m
 }
