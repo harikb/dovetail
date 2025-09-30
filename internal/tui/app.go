@@ -794,7 +794,7 @@ func (m Model) renderCleanupModal() string {
 		Padding(1).
 		Margin(1)
 
-	confirmText := fmt.Sprintf("Clean up old files?\n\nApply completed successfully! Clean up:\n• Action file: %s\n• All patch files from session: %s\n• All other dovetail temporary files\n\nThis will help keep your directories clean.\n\n[y] Yes, clean up  [n] No, keep files", m.cleanupActionFile, m.cleanupOldSessionID)
+	confirmText := fmt.Sprintf("Clean up old files?\n\nApply completed successfully! Clean up:\n• Action file: %s\n• All patch files from session: %s\n• All other dovetail temporary files\n\nThis will help keep your directories clean.\n\n[y] Yes, clean up  [n/ESC/Enter] No, keep files", m.cleanupActionFile, m.cleanupOldSessionID)
 	return confirmStyle.Render(confirmText)
 }
 
@@ -817,7 +817,7 @@ func (m Model) renderPatchCleanupModal() string {
 		}
 	}
 
-	confirmText := fmt.Sprintf("Clean up patch files from previous runs?\n\nFound %d patch files:\n• Left directory: %d files\n• Right directory: %d files\n\nThese are leftover .patch files from previous dovetail hunk operations.\nThey are safe to remove.\n\n[y] Yes, clean up  [n] No, keep files", len(m.detectedPatchFiles), leftCount, rightCount)
+	confirmText := fmt.Sprintf("Clean up patch files from previous runs?\n\nFound %d patch files:\n• Left directory: %d files\n• Right directory: %d files\n\nThese are leftover .patch files from previous dovetail hunk operations.\nThey are safe to remove.\n\n[y] Yes, clean up  [n/ESC/Enter] No, keep files", len(m.detectedPatchFiles), leftCount, rightCount)
 	return confirmStyle.Render(confirmText)
 }
 
@@ -859,6 +859,21 @@ func (m Model) handleModalKeys(key string) (Model, tea.Cmd) {
 			model, cmd = m.handlePatchCleanupConfirm(false)
 		} else if m.showingQuitConfirm {
 			model, cmd = m.handleQuitConfirm(false)
+		}
+	case "enter", "space", " ":
+		// Allow Enter/Space to dismiss cleanup modal (defaults to "no")
+		if m.showingCleanup {
+			model, cmd = m.handleCleanupConfirm(false)
+		} else if m.showingPatchCleanup {
+			model, cmd = m.handlePatchCleanupConfirm(false)
+		}
+	case "q":
+		// Allow 'q' to quit even when modal is active (except for quit confirmation)
+		if !m.showingQuitConfirm {
+			if cleanup := getProfilingCleanup(); cleanup != nil {
+				cleanup()
+			}
+			return m, tea.Quit
 		}
 	}
 
@@ -2497,26 +2512,43 @@ func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 
 // performFreshComparison re-runs the directory comparison
 func (m Model) performFreshComparison() ([]compare.ComparisonResult, *compare.ComparisonSummary, error) {
-	// Create comparison engine with default options
-	engine := compare.NewEngine(compare.ComparisonOptions{})
+	util.DebugPrintf("=== performFreshComparison START ===")
+	util.DebugPrintf("Left dir: %s", m.leftDir)
+	util.DebugPrintf("Right dir: %s", m.rightDir)
 
+	// Create comparison engine with default options
+	util.DebugPrintf("Creating comparison engine...")
+	engine := compare.NewEngine(compare.ComparisonOptions{})
+	util.DebugPrintf("Comparison engine created successfully")
+
+	util.DebugPrintf("Starting comparison...")
 	results, summary, err := engine.Compare(m.leftDir, m.rightDir)
+	util.DebugPrintf("Comparison completed, err: %v", err)
+
 	if err != nil {
+		util.DebugPrintf("Comparison failed: %v", err)
 		return nil, nil, fmt.Errorf("comparison failed: %w", err)
 	}
 
+	util.DebugPrintf("Comparison successful, found %d results", len(results))
+
 	// Filter out identical files for UI
+	util.DebugPrintf("Filtering identical files...")
 	var filteredResults []compare.ComparisonResult
 	for _, result := range results {
 		if result.Status != compare.StatusIdentical {
 			filteredResults = append(filteredResults, result)
 		}
 	}
+	util.DebugPrintf("Filtered to %d non-identical files", len(filteredResults))
 
 	// Sort results alphabetically
+	util.DebugPrintf("Sorting results...")
 	sort.Slice(filteredResults, func(i, j int) bool {
 		return filteredResults[i].RelativePath < filteredResults[j].RelativePath
 	})
+	util.DebugPrintf("Results sorted successfully")
 
+	util.DebugPrintf("=== performFreshComparison COMPLETE ===")
 	return filteredResults, summary, nil
 }

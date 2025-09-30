@@ -43,10 +43,10 @@ type FileInfo struct {
 type ComparisonMethod int
 
 const (
-	ComparisonHash ComparisonMethod = iota // Full hash comparison
-	ComparisonSize                         // Size-only comparison  
-	ComparisonError                        // Error during comparison
-	ComparisonExistence                    // File exists on one side only (no content comparison)
+	ComparisonHash      ComparisonMethod = iota // Full hash comparison
+	ComparisonSize                              // Size-only comparison
+	ComparisonError                             // Error during comparison
+	ComparisonExistence                         // File exists on one side only (no content comparison)
 )
 
 func (cm ComparisonMethod) String() string {
@@ -68,10 +68,10 @@ func (cm ComparisonMethod) String() string {
 type SizeComparison int
 
 const (
-	SizeEqual SizeComparison = iota // Files are same size
-	SizeLeftSmaller                 // Left file is smaller
-	SizeLeftBigger                  // Left file is bigger
-	SizeNotApplicable               // File exists on one side only
+	SizeEqual         SizeComparison = iota // Files are same size
+	SizeLeftSmaller                         // Left file is smaller
+	SizeLeftBigger                          // Left file is bigger
+	SizeNotApplicable                       // File exists on one side only
 )
 
 func (sc SizeComparison) String() string {
@@ -93,10 +93,10 @@ func (sc SizeComparison) String() string {
 type TimeComparison int
 
 const (
-	TimeEqual TimeComparison = iota // Files have same modification time
-	TimeLeftOlder                   // Left file is older
-	TimeLeftNewer                   // Left file is newer
-	TimeNotApplicable               // File exists on one side only
+	TimeEqual         TimeComparison = iota // Files have same modification time
+	TimeLeftOlder                           // Left file is older
+	TimeLeftNewer                           // Left file is newer
+	TimeNotApplicable                       // File exists on one side only
 )
 
 func (tc TimeComparison) String() string {
@@ -116,13 +116,13 @@ func (tc TimeComparison) String() string {
 
 // ComparisonResult represents the result of comparing a single file/directory
 type ComparisonResult struct {
-	RelativePath      string           // Path relative to comparison root
-	Status            FileStatus       // Comparison status
-	LeftInfo          *FileInfo        // Info from left directory (nil if not present)
-	RightInfo         *FileInfo        // Info from right directory (nil if not present)
-	ComparisonMethod  ComparisonMethod // How the comparison was performed
-	SizeComparison    SizeComparison   // Relative file sizes
-	TimeComparison    TimeComparison   // Relative modification times
+	RelativePath     string           // Path relative to comparison root
+	Status           FileStatus       // Comparison status
+	LeftInfo         *FileInfo        // Info from left directory (nil if not present)
+	RightInfo        *FileInfo        // Info from right directory (nil if not present)
+	ComparisonMethod ComparisonMethod // How the comparison was performed
+	SizeComparison   SizeComparison   // Relative file sizes
+	TimeComparison   TimeComparison   // Relative modification times
 }
 
 // ComparisonOptions contains options for directory comparison

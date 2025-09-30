@@ -35,24 +35,34 @@ func (e *Engine) SetVerboseLevel(level int) {
 
 // Compare performs a recursive comparison of two directories
 func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *ComparisonSummary, error) {
+	util.DebugPrintf("=== Engine.Compare START ===")
+	util.DebugPrintf("Left dir: %s", leftDir)
+	util.DebugPrintf("Right dir: %s", rightDir)
 	util.VerbosePrintf(e.verboseLevel, 1, "Starting directory comparison...")
 
 	// Collect all files from both directories
+	util.DebugPrintf("Starting left directory scan...")
 	util.VerbosePrintf(e.verboseLevel, 1, "Scanning left directory: %s", leftDir)
 	leftFiles, leftPatchFiles, err := e.collectFiles(leftDir, "left")
 	if err != nil {
+		util.DebugPrintf("Left directory scan failed: %v", err)
 		return nil, nil, fmt.Errorf("failed to scan left directory: %w", err)
 	}
+	util.DebugPrintf("Left directory scan completed, found %d items", len(leftFiles))
 	util.VerbosePrintf(e.verboseLevel, 1, "Found %d items in left directory", len(leftFiles))
 
+	util.DebugPrintf("Starting right directory scan...")
 	util.VerbosePrintf(e.verboseLevel, 1, "Scanning right directory: %s", rightDir)
 	rightFiles, rightPatchFiles, err := e.collectFiles(rightDir, "right")
 	if err != nil {
+		util.DebugPrintf("Right directory scan failed: %v", err)
 		return nil, nil, fmt.Errorf("failed to scan right directory: %w", err)
 	}
+	util.DebugPrintf("Right directory scan completed, found %d items", len(rightFiles))
 	util.VerbosePrintf(e.verboseLevel, 1, "Found %d items in right directory", len(rightFiles))
 
 	// Create a set of all unique paths
+	util.DebugPrintf("Creating unique paths set...")
 	allPaths := make(map[string]bool)
 	for path := range leftFiles {
 		allPaths[path] = true
@@ -60,7 +70,9 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 	for path := range rightFiles {
 		allPaths[path] = true
 	}
+	util.DebugPrintf("Created unique paths set with %d paths", len(allPaths))
 
+	util.DebugPrintf("Starting parallel comparison with %d workers...", e.options.ParallelWorkers)
 	util.VerbosePrintf(e.verboseLevel, 1, "Comparing %d unique paths using %d workers...", len(allPaths), e.options.ParallelWorkers)
 
 	// Compare files in parallel
@@ -71,9 +83,11 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 	allPatchFiles := append(leftPatchFiles, rightPatchFiles...)
 	summary.DetectedPatchFiles = allPatchFiles
 	if len(allPatchFiles) > 0 {
+		util.DebugPrintf("Total patch files detected: %d", len(allPatchFiles))
 		util.VerbosePrintf(e.verboseLevel, 1, "Total patch files detected: %d", len(allPatchFiles))
 	}
 
+	util.DebugPrintf("Creating channels and worker pool...")
 	resultsChan := make(chan ComparisonResult, len(allPaths))
 	errorsChan := make(chan error, len(allPaths))
 
@@ -83,6 +97,7 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 	// Create worker pool
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, e.options.ParallelWorkers)
+	util.DebugPrintf("Worker pool created, starting workers...")
 
 	for path := range allPaths {
 		wg.Add(1)
@@ -108,23 +123,39 @@ func (e *Engine) Compare(leftDir, rightDir string) ([]ComparisonResult, *Compari
 	}
 
 	// Close channels when all workers are done
+	util.DebugPrintf("Starting worker completion goroutine...")
 	go func() {
+		util.DebugPrintf("Waiting for all workers to complete...")
 		wg.Wait()
+		util.DebugPrintf("All workers completed, closing channels...")
 		close(resultsChan)
 		close(errorsChan)
+		util.DebugPrintf("Channels closed")
 	}()
 
 	// Collect results and errors
+	util.DebugPrintf("Starting result collection...")
+	resultCount := 0
 	for result := range resultsChan {
 		results = append(results, result)
 		e.updateSummary(summary, result)
+		resultCount++
+		if resultCount%100 == 0 {
+			util.DebugPrintf("Collected %d results so far...", resultCount)
+		}
 	}
+	util.DebugPrintf("Result collection completed, collected %d results", resultCount)
 
+	util.DebugPrintf("Collecting errors...")
+	errorCount := 0
 	for err := range errorsChan {
 		summary.ErrorsEncountered = append(summary.ErrorsEncountered, err.Error())
+		errorCount++
 	}
+	util.DebugPrintf("Error collection completed, found %d errors", errorCount)
 
 	progressReporter.Finish()
+	util.DebugPrintf("=== Engine.Compare COMPLETE ===")
 	util.VerbosePrintf(e.verboseLevel, 1, "Comparison complete!")
 
 	return results, summary, nil
@@ -135,6 +166,8 @@ var patchFilePattern = regexp.MustCompile(`^(.+)\.(\d{8}_\d{6})\.patch$`)
 
 // collectFiles recursively collects all files from a directory
 func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []PatchFileInfo, error) {
+	util.DebugPrintf("=== collectFiles START (%s) ===", side)
+	util.DebugPrintf("Scanning directory: %s", dir)
 	files := make(map[string]*FileInfo)
 	var patchFiles []PatchFileInfo
 	fileCount := 0
@@ -234,6 +267,8 @@ func (e *Engine) collectFiles(dir string, side string) (map[string]*FileInfo, []
 		return nil
 	})
 
+	util.DebugPrintf("=== collectFiles COMPLETE (%s) ===", side)
+	util.DebugPrintf("Scanned %d files, found %d patch files", fileCount, len(patchFiles))
 	if e.verboseLevel >= 2 {
 		util.VerbosePrintf(e.verboseLevel, 2, "Completed scan of %s: %d files found", side, fileCount)
 		if len(patchFiles) > 0 {
@@ -267,7 +302,7 @@ func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo) (Com
 		result.ComparisonMethod = ComparisonExistence // File exists on left side only
 	} else {
 		// Both exist, compare them and calculate metadata
-		
+
 		// Calculate size comparison for files
 		if !leftInfo.IsDir && !rightInfo.IsDir {
 			if leftInfo.Size == rightInfo.Size {
@@ -280,7 +315,7 @@ func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo) (Com
 		} else {
 			result.SizeComparison = SizeNotApplicable // Directories
 		}
-		
+
 		// Calculate time comparison
 		if leftInfo.ModTime.Equal(rightInfo.ModTime) {
 			result.TimeComparison = TimeEqual
@@ -302,7 +337,7 @@ func (e *Engine) compareFile(relPath string, leftInfo, rightInfo *FileInfo) (Com
 		} else {
 			// Both are files - compare content
 			hasHashError := leftInfo.Hash == "ERROR_CALCULATING_HASH" || rightInfo.Hash == "ERROR_CALCULATING_HASH"
-			
+
 			if hasHashError {
 				result.ComparisonMethod = ComparisonError
 				result.Status = StatusModified // Assume different when hash failed
