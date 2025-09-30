@@ -129,6 +129,8 @@ func NewApp(results []compare.ComparisonResult, summary *compare.ComparisonSumma
 		detectedPatchFiles:  summary.DetectedPatchFiles,
 		showingPatchCleanup: len(summary.DetectedPatchFiles) > 0, // Show cleanup prompt if patch files detected
 		comparisonOptions:   comparisonOptions,                   // Store comparison options for refreshAfterApply
+		logLines:            []string{},                          // Initialize empty log lines
+		logScrollOffset:     0,                                   // Initialize scroll offset
 	}
 
 	// Initialize default actions (all ignore for safety)
@@ -281,6 +283,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case comparisonCompleteMsg:
+		// Stop the timer by not returning any commands
 		if msg.success {
 			// Update model with fresh results
 			m.results = msg.results
@@ -2672,50 +2675,49 @@ func (m Model) refreshAfterApply(appliedActionFile string) (Model, tea.Cmd) {
 	// Add log message and start comparison with progress updates
 	m.addLogMessage("Starting fresh comparison...")
 
-	// Start comparison with log updates
-	return m, m.runComparisonWithLogs()
+	// Start comparison with log updates and separate timer
+	return m, tea.Batch(
+		m.runComparisonWithLogs(),
+		// Start a separate timer for progress updates
+		tea.Tick(time.Millisecond*500, func(t time.Time) tea.Msg {
+			return logUpdateMsg{line: fmt.Sprintf("Comparing directories... %s", time.Now().Format("15:04:05"))}
+		}),
+	)
 }
 
 // runComparisonWithLogs runs the comparison and sends log updates
 func (m Model) runComparisonWithLogs() tea.Cmd {
-	return tea.Batch(
-		// Start the comparison
-		func() tea.Msg {
-			util.DebugPrintf("=== runComparisonWithLogs START ===")
+	// Start the comparison
+	return func() tea.Msg {
+		util.DebugPrintf("=== runComparisonWithLogs START ===")
 
-			// Create comparison engine with preserved options
-			engine := compare.NewEngine(m.comparisonOptions)
+		// Create comparison engine with preserved options
+		engine := compare.NewEngine(m.comparisonOptions)
 
-			// Run comparison (this will use the existing comparison logic)
-			results, summary, err := engine.Compare(m.leftDir, m.rightDir)
+		// Run comparison (this will use the existing comparison logic)
+		results, summary, err := engine.Compare(m.leftDir, m.rightDir)
 
-			if err != nil {
-				util.DebugPrintf("Comparison failed: %v", err)
-				return comparisonCompleteMsg{success: false, error: err, results: nil, summary: nil}
+		if err != nil {
+			util.DebugPrintf("Comparison failed: %v", err)
+			return comparisonCompleteMsg{success: false, error: err, results: nil, summary: nil}
+		}
+
+		// Filter out identical files for UI
+		var filteredResults []compare.ComparisonResult
+		for _, result := range results {
+			if result.Status != compare.StatusIdentical {
+				filteredResults = append(filteredResults, result)
 			}
+		}
 
-			// Filter out identical files for UI
-			var filteredResults []compare.ComparisonResult
-			for _, result := range results {
-				if result.Status != compare.StatusIdentical {
-					filteredResults = append(filteredResults, result)
-				}
-			}
+		// Sort results alphabetically
+		sort.Slice(filteredResults, func(i, j int) bool {
+			return filteredResults[i].RelativePath < filteredResults[j].RelativePath
+		})
 
-			// Sort results alphabetically
-			sort.Slice(filteredResults, func(i, j int) bool {
-				return filteredResults[i].RelativePath < filteredResults[j].RelativePath
-			})
-
-			util.DebugPrintf("=== runComparisonWithLogs COMPLETE ===")
-			return comparisonCompleteMsg{success: true, error: nil, results: filteredResults, summary: summary}
-		},
-		// Send periodic log updates to show activity
-		tea.Tick(time.Millisecond*200, func(t time.Time) tea.Msg {
-			// Send a simple progress indicator
-			return logUpdateMsg{line: fmt.Sprintf("Comparing directories... %s", time.Now().Format("15:04:05"))}
-		}),
-	)
+		util.DebugPrintf("=== runComparisonWithLogs COMPLETE ===")
+		return comparisonCompleteMsg{success: true, error: nil, results: filteredResults, summary: summary}
+	}
 }
 
 // addLogMessage adds a message to the log panel
