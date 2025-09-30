@@ -165,7 +165,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Launch TUI with profiling cleanup
-	tuiApp := tui.NewApp(results, summary, leftDir, rightDir, tuiIgnoreWhitespace)
+	tuiApp := tui.NewApp(results, summary, leftDir, rightDir, tuiIgnoreWhitespace, options)
 	tui.SetProfilingCleanup(GetCleanupProfiling())
 	return tuiApp.Run()
 }
